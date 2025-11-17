@@ -48,7 +48,12 @@ class DriveNowScraper:
             self.config = yaml.safe_load(f)
         
         self.results_base_url = self.config['scraper']['results_base_url']
-        self.headless = self.config['scraper']['headless']
+        # Force headless mode in CI environments (GitHub Actions, etc.)
+        # CI environments don't have a display server
+        is_ci = os.getenv('CI', '').lower() == 'true' or os.getenv('GITHUB_ACTIONS', '').lower() == 'true'
+        self.headless = True if is_ci else self.config['scraper']['headless']
+        if is_ci and not self.config['scraper']['headless']:
+            logger.info("CI environment detected - forcing headless mode (no display server available)")
         self.page_load_wait = self.config['scraper']['page_load_wait']
         self.screenshot_enabled = self.config['scraper']['screenshot']['enabled']
         self.screenshot_dir = Path(self.config['scraper']['screenshot']['directory'])
