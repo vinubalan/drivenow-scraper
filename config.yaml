@@ -45,12 +45,12 @@ scraper:
     enabled: true  # Enabled for maximum speed
     # Number of parallel workers for Phase 2 (screenshots)
     # Reduced to avoid detection
-    workers: 10
+    workers: 5
     # Batch size for processing vehicles in parallel (Phase 2)
-    batch_size: 10
+    batch_size: 5
     # Number of parallel workers for Phase 1 (data collection)
     # Reduced significantly to avoid detection
-    phase1_workers: 10
+    phase1_workers: 5
   
   # Rate limiting to avoid getting blocked
   rate_limiting:
