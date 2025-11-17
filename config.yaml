@@ -29,7 +29,7 @@ date_config:
   
   # Days ahead for return dates (relative to pickup date)
   # e.g., [1, 7] means +1 day and +7 days
-  return_days: [1, 7]
+  return_days: [1, 7, 14]
 
 # Scraper settings
 scraper:
