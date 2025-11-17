@@ -2641,7 +2641,19 @@ class DriveNowScraper:
             try:
                 new_loop.run_until_complete(self._collect_all_vehicles_parallel_async(db))
             finally:
-                new_loop.close()
+                # Wait for pending tasks before closing
+                try:
+                    pending = asyncio.all_tasks(new_loop)
+                    if pending:
+                        for task in pending:
+                            task.cancel()
+                        new_loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                finally:
+                    new_loop.close()
         
         collection_thread = threading.Thread(target=run_collection, daemon=False)
         collection_thread.start()
@@ -2656,7 +2668,19 @@ class DriveNowScraper:
                     try:
                         new_loop.run_until_complete(self._close_async())
                     finally:
-                        new_loop.close()
+                        # Wait for pending tasks before closing
+                        try:
+                            pending = asyncio.all_tasks(new_loop)
+                            if pending:
+                                for task in pending:
+                                    task.cancel()
+                                new_loop.run_until_complete(
+                                    asyncio.gather(*pending, return_exceptions=True)
+                                )
+                        except Exception:
+                            pass
+                        finally:
+                            new_loop.close()
                 close_thread = threading.Thread(target=close_browser, daemon=False)
                 close_thread.start()
                 close_thread.join(timeout=5)
@@ -2703,6 +2727,12 @@ class DriveNowScraper:
             except (Exception, asyncio.TimeoutError):
                 pass  # Ignore errors/timeouts for faster cleanup
         
+        # Wait a moment for Playwright's internal cleanup callbacks
+        try:
+            await asyncio.sleep(0.1)  # Small delay for internal cleanup
+        except:
+            pass
+        
         # Clear the lists immediately
         self.async_contexts = []
         self.async_browser = None
@@ -2738,7 +2768,19 @@ class DriveNowScraper:
                         self.async_browser = None
                         self.async_playwright = None
                     finally:
-                        new_loop.close()
+                        # Wait for pending tasks before closing
+                        try:
+                            pending = asyncio.all_tasks(new_loop)
+                            if pending:
+                                for task in pending:
+                                    task.cancel()
+                                new_loop.run_until_complete(
+                                    asyncio.gather(*pending, return_exceptions=True)
+                                )
+                        except Exception:
+                            pass
+                        finally:
+                            new_loop.close()
                 
                 # Run in thread with timeout
                 thread = threading.Thread(target=run_close, daemon=True)

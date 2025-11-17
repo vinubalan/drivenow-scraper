@@ -53,7 +53,21 @@ def main():
                 try:
                     new_loop.run_until_complete(scraper._collect_all_vehicles_parallel_async(db))
                 finally:
-                    new_loop.close()
+                    # Wait for pending tasks and cancel them before closing
+                    try:
+                        # Give a moment for Playwright's internal cleanup
+                        pending = asyncio.all_tasks(new_loop)
+                        if pending:
+                            for task in pending:
+                                task.cancel()
+                            # Wait briefly for cancellations
+                            new_loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                    except Exception:
+                        pass  # Ignore errors during cleanup
+                    finally:
+                        new_loop.close()
             
             collection_thread = threading.Thread(target=run_collection, daemon=False)
             collection_thread.start()
@@ -73,7 +87,19 @@ def main():
                             scraper.async_browser = None
                             scraper.async_playwright = None
                         finally:
-                            new_loop.close()
+                            # Wait for pending tasks before closing
+                            try:
+                                pending = asyncio.all_tasks(new_loop)
+                                if pending:
+                                    for task in pending:
+                                        task.cancel()
+                                    new_loop.run_until_complete(
+                                        asyncio.gather(*pending, return_exceptions=True)
+                                    )
+                            except Exception:
+                                pass
+                            finally:
+                                new_loop.close()
                     close_thread = threading.Thread(target=close_browser, daemon=True)
                     close_thread.start()
                     close_thread.join(timeout=6.0)  # Max 6 seconds
