@@ -1,0 +1,99 @@
+# DriveNow Scraper Configuration
+
+# Cities to scrape
+cities:
+  - name: "Sydney"
+    code: "SYD"
+    latitude: -33.86706149922719
+    longitude: 151.2155219586914
+    location_string: "Sydney, New South Wales, Australia"
+    radius: 3
+  - name: "Melbourne"
+    code: "MEL"
+    latitude: -37.810880781683
+    longitude: 144.96666719454
+    location_string: "Melbourne, Victoria, Australia"
+    radius: 3
+  - name: "Brisbane"
+    code: "BNE"
+    latitude: -27.46794
+    longitude: 153.02809
+    location_string: "Brisbane, Queensland, Australia"
+    radius: 3.5
+
+# Date configuration
+date_config:
+  # Time for pickup and return (24-hour format)
+  pickup_time: "10:00"
+  return_time: "10:00"
+  
+  # Days ahead for return dates (relative to pickup date)
+  # e.g., [1, 7] means +1 day and +7 days
+  return_days: [1, 7]
+
+# Scraper settings
+scraper:
+  # Base URL for results (direct URL pattern)
+  results_base_url: "https://carhire.drivenow.com.au/drivenow/results"
+  
+  # Wait time for page loads (seconds) - keep reasonable for proper loading
+  page_load_wait: 8
+  
+  # Parallel processing for speed (10x faster mode)
+  parallel:
+    # Enable parallel processing (set to true for 10x speed)
+    enabled: true  # Enabled for maximum speed
+    # Number of parallel workers for Phase 2 (screenshots)
+    # Reduced to avoid detection
+    workers: 3
+    # Batch size for processing vehicles in parallel (Phase 2)
+    batch_size: 3
+    # Number of parallel workers for Phase 1 (data collection)
+    # Reduced significantly to avoid detection
+    phase1_workers: 3
+  
+  # Rate limiting to avoid getting blocked
+  rate_limiting:
+    # Delay between requests (seconds) - increased to avoid detection
+    delay_between_requests: 3.0
+    # Delay between vehicle detail pages (seconds) - increased to avoid detection
+    delay_between_vehicles: 2.0
+    # Delay between cities (seconds) - increased significantly
+    delay_between_cities: 5.0
+    # Random delay range (adds randomness to avoid detection) - increased range
+    random_delay_min: 1.0
+    random_delay_max: 4.0
+    # Delay between batches (seconds) - new setting
+    delay_between_batches: 10.0
+  
+  # Screenshot settings
+  screenshot:
+    enabled: true
+    directory: "screenshots"
+    format: "png"
+  
+  # Headless mode (set to false to see browser)
+  # Note: headless mode might cause rendering issues with screenshots
+  headless: false  # Set to false to ensure proper rendering
+  
+  # Browser window size
+  window_width: 1920
+  window_height: 1080
+  
+  # Anti-detection settings
+  anti_detection:
+    # Rotate user agents
+    rotate_user_agents: true
+    # Randomize viewport sizes slightly
+    randomize_viewport: true
+
+# Database settings (now using Supabase PostgreSQL)
+database:
+  # Database is now configured via environment variables
+  # See .env.example for required variables
+
+# Cloud storage settings
+cloud_storage:
+  # Enable cloud storage for screenshots (Cloudflare R2)
+  enabled: true  # Set to false to use local storage
+
