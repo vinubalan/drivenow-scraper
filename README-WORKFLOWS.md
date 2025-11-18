@@ -49,10 +49,14 @@ PICKUP_DATE='2025-11-19' ./test-workflow-local.sh
 ```
 
 The script will:
-1. Load environment variables from `.env`
-2. Set CI mode flags
-3. Install dependencies (if needed)
-4. Run the scraper
+1. Check for and activate virtual environment (or create one if needed)
+2. Load environment variables from `.env`
+3. Set CI mode flags
+4. Check for and install dependencies (if needed)
+5. Check for and install Playwright browsers (if needed)
+6. Run the scraper with progress bar
+
+**Note**: The script is smart about dependencies - it will skip installation if packages are already available, making subsequent runs faster.
 
 ## Option 2: Using `act` (GitHub Actions Runner)
 
@@ -109,6 +113,8 @@ act workflow_dispatch \
 
 4. **Platform Differences**: Some steps might behave differently in Docker vs GitHub Actions. The workflows have been updated for Ubuntu 24.04 compatibility.
 
+5. **Environment Variables**: Note that `act` expects environment variable names to match GitHub secrets. The workflows use `SUPABASE_DB_*` prefix for database variables.
+
 ## Option 3: Direct Testing (Simplest)
 
 Just run the scraper with environment variables:
@@ -142,12 +148,43 @@ python3 scrape.py
 - **Trigger**: Scheduled daily at 8:00 AM AEST (22:00 UTC previous day)
 - **Pickup Date**: Same day at 10:00 AM AEST
 - **Environment**: Sets `CI='true'` automatically
+- **Caching**: Caches pip dependencies and Playwright browsers for faster runs
 
 ### Manual Workflow (`.github/workflows/scrape-manual.yml`)
 
 - **Trigger**: Manual via GitHub Actions UI
 - **Pickup Date**: User-specified (YYYY-MM-DD format) at 10:00 AM AEST
 - **Environment**: Sets `CI='true'` and `PICKUP_DATE` from input
+- **Validation**: Validates pickup date format before running
+- **Caching**: Caches pip dependencies and Playwright browsers for faster runs
+
+## Expected Output
+
+When running locally, you should see:
+
+```
+============================================================
+DriveNow Scraper - Starting Collection
+============================================================
+Pickup date: 2025-11-19 10:00 AEST (next day)
+Return dates: 2025-11-20, 2025-11-26, 2025-12-03
+Processing 12 city-date combinations...
+⠋ Scraping vehicles... Sydney 2025-11-19→2025-11-20: 30 vehicles ████████░░ 67% (8/12) 0:02:15
+✓ Collection complete: 360 vehicles collected in 2m 45s
+============================================================
+✓ Collection complete! Total time: 2m 45s (165.0 seconds)
+============================================================
+
+Collection Summary
+Total vehicles collected: 360
+  Sydney: 90 vehicles
+  Melbourne: 90 vehicles
+  Brisbane: 90 vehicles
+  Adelaide: 90 vehicles
+
+Vehicles with URLs: 360/360
+Vehicles with screenshots: 360/360
+```
 
 ## Troubleshooting
 
@@ -159,11 +196,15 @@ pip3 install -r requirements.txt
 playwright install chromium
 ```
 
+The `test-workflow-local.sh` script will check and install dependencies automatically.
+
 ### Environment Variables
 
 Ensure `.env` file exists with all required variables:
-- Database credentials (Supabase)
+- Database credentials (Supabase) - use `SUPABASE_DB_*` prefix
 - R2 credentials (Cloudflare)
+
+**Important**: The environment variable names use `SUPABASE_DB_*` prefix (not `DB_*`).
 
 ### Database Connection
 
@@ -179,19 +220,41 @@ When testing manual workflow, use `YYYY-MM-DD` format:
 - ✅ Correct: `2025-11-19`
 - ❌ Incorrect: `11/19/2025`, `19-11-2025`, etc.
 
+### Progress Bar Not Showing
+
+- Some terminals may not support progress bars
+- Detailed logs are always available in `scraper.log`
+- Query the database directly to verify data was collected correctly
+
+### Virtual Environment Issues
+
+If the `test-workflow-local.sh` script has issues with the virtual environment:
+- Delete `.venv` and let the script recreate it
+- Or manually create: `python3 -m venv .venv && source .venv/bin/activate`
+
 ## GitHub Actions Secrets
 
 For workflows to run in GitHub Actions, ensure these secrets are configured:
 
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
+- `SUPABASE_DB_HOST`
+- `SUPABASE_DB_PORT`
+- `SUPABASE_DB_NAME`
+- `SUPABASE_DB_USER`
+- `SUPABASE_DB_PASSWORD`
 - `R2_ACCOUNT_ID`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET_NAME`
 - `R2_PUBLIC_URL` (optional)
 
+**Note**: The secrets use `SUPABASE_DB_*` prefix to match the environment variable names used in the workflows.
+
 See the main `README.md` for more details on setting up GitHub secrets.
+
+## Workflow Caching
+
+Both workflows include caching for:
+- **pip dependencies**: Speeds up dependency installation
+- **Playwright browsers**: Speeds up browser installation
+
+Caches are automatically invalidated when `requirements.txt` changes, ensuring you always have the latest dependencies.

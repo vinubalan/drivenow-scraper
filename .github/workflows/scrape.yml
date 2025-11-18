@@ -59,11 +59,11 @@ jobs:
       
       - name: Load environment variables
         run: |
-          echo "DB_HOST=${{ secrets.DB_HOST }}" >> $GITHUB_ENV
-          echo "DB_PORT=${{ secrets.DB_PORT }}" >> $GITHUB_ENV
-          echo "DB_NAME=${{ secrets.DB_NAME }}" >> $GITHUB_ENV
-          echo "DB_USER=${{ secrets.DB_USER }}" >> $GITHUB_ENV
-          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_HOST=${{ secrets.SUPABASE_DB_HOST }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_PORT=${{ secrets.SUPABASE_DB_PORT }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_NAME=${{ secrets.SUPABASE_DB_NAME }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_USER=${{ secrets.SUPABASE_DB_USER }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}" >> $GITHUB_ENV
           echo "R2_ACCOUNT_ID=${{ secrets.R2_ACCOUNT_ID }}" >> $GITHUB_ENV
           echo "R2_ACCESS_KEY_ID=${{ secrets.R2_ACCESS_KEY_ID }}" >> $GITHUB_ENV
           echo "R2_SECRET_ACCESS_KEY=${{ secrets.R2_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV

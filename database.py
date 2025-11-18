@@ -94,19 +94,6 @@ class Database:
                 )
             """)
             
-            # Screenshots table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS screenshots (
-                    id SERIAL PRIMARY KEY,
-                    scrape_datetime TIMESTAMP NOT NULL,
-                    city VARCHAR(255) NOT NULL,
-                    pickup_date TIMESTAMP NOT NULL,
-                    return_date TIMESTAMP NOT NULL,
-                    screenshot_path TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
             # Create indexes for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_vehicles_scrape_datetime 
@@ -120,11 +107,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_vehicles_pickup_date 
                 ON vehicles(pickup_date)
             """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_screenshots_scrape_datetime 
-                ON screenshots(scrape_datetime)
-            """)
-            
             # Add depot_code and supplier_code columns if they don't exist (migration for existing databases)
             depot_code_columns = [
                 ('depot_code', 'VARCHAR(50)'),
@@ -172,10 +154,23 @@ class Database:
                             ALTER TABLE vehicles 
                             DROP COLUMN {column_name}
                         """)
-                        logger.info(f"Dropped unused column: {column_name}")
                 except Exception as e:
                     # Ignore errors (column might not exist or other issues)
                     pass
+            
+            # Drop screenshots table if it exists (no longer needed - screenshots stored in vehicles table)
+            try:
+                cursor.execute("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_name='screenshots'
+                """)
+                if cursor.fetchone():
+                    # Table exists, drop it
+                    cursor.execute("DROP TABLE screenshots CASCADE")
+            except Exception as e:
+                # Ignore errors (table might not exist or other issues)
+                pass
             
             # Add city location columns if they don't exist (migration for existing databases)
             city_location_columns = [
@@ -270,48 +265,6 @@ class Database:
         except Exception as e:
             self.conn.rollback()
             raise Exception(f"Failed to insert vehicle: {str(e)}")
-        finally:
-            cursor.close()
-    
-    def insert_screenshot(self, screenshot_data: Dict) -> int:
-        """
-        Insert a screenshot record into the database.
-        
-        Args:
-            screenshot_data: Dictionary containing screenshot information
-            
-        Returns:
-            ID of the inserted record
-        """
-        cursor = self.conn.cursor()
-        
-        try:
-            # Parse datetime strings to TIMESTAMP
-            scrape_dt = datetime.fromisoformat(screenshot_data.get('scrape_datetime').replace('Z', '+00:00'))
-            pickup_dt = datetime.fromisoformat(screenshot_data.get('pickup_date').replace('Z', '+00:00'))
-            return_dt = datetime.fromisoformat(screenshot_data.get('return_date').replace('Z', '+00:00'))
-            
-            cursor.execute("""
-                INSERT INTO screenshots (
-                    scrape_datetime, city, pickup_date, return_date,
-                    screenshot_path, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                scrape_dt,
-                screenshot_data.get('city'),
-                pickup_dt,
-                return_dt,
-                screenshot_data.get('screenshot_path'),
-                get_aest_now()
-            ))
-            
-            screenshot_id = cursor.fetchone()[0]
-            self.conn.commit()
-            return screenshot_id
-        except Exception as e:
-            self.conn.rollback()
-            raise Exception(f"Failed to insert screenshot: {str(e)}")
         finally:
             cursor.close()
     
@@ -476,29 +429,23 @@ class Database:
     
     def clear_all_data(self):
         """
-        Clear all data from vehicles and screenshots tables.
+        Clear all data from vehicles table.
         WARNING: This will delete ALL records!
         
         Returns:
-            Tuple of (vehicles_deleted, screenshots_deleted)
+            Number of vehicles deleted
         """
         cursor = self.conn.cursor()
         try:
-            # Get counts before deletion
+            # Get count before deletion
             cursor.execute("SELECT COUNT(*) FROM vehicles")
             vehicle_count = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM screenshots")
-            screenshot_count = cursor.fetchone()[0]
             
             # Clear vehicles table
             cursor.execute("TRUNCATE TABLE vehicles RESTART IDENTITY CASCADE")
             
-            # Clear screenshots table
-            cursor.execute("TRUNCATE TABLE screenshots RESTART IDENTITY CASCADE")
-            
             self.conn.commit()
-            return (vehicle_count, screenshot_count)
+            return vehicle_count
         except Exception as e:
             self.conn.rollback()
             raise Exception(f"Failed to clear database: {str(e)}")

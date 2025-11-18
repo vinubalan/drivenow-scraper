@@ -19,10 +19,19 @@ import pytz
 import os
 from cloud_storage import CloudflareR2Storage
 import re
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TaskID
+from rich.logging import RichHandler
 
+# Set up rich console for better output
+console = Console()
+
+# Configure logging - only show warnings and errors by default, use rich handler
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.WARNING,  # Changed from INFO to WARNING to reduce noise
+    format='%(message)s',
+    datefmt='[%X]',
+    handlers=[RichHandler(console=console, rich_tracebacks=True, show_path=False)]
 )
 logger = logging.getLogger(__name__)
 
@@ -208,7 +217,7 @@ class DriveNowScraper:
                 pickup_date = datetime.combine(pickup_date_only, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
                 # Ensure timezone-aware
                 pickup_date = AEST.localize(pickup_date)
-                logger.info(f"[Manual Pickup Date] Using specified pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST")
+                console.print(f"[dim]Using pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST[/dim]")
             except ValueError as e:
                 logger.error(f"Invalid PICKUP_DATE format '{manual_pickup_date_str}'. Expected YYYY-MM-DD. Using default logic.")
                 manual_pickup_date_str = None
@@ -228,13 +237,13 @@ class DriveNowScraper:
                 # Running in CI: pickup date is same day at 10 AM
                 pickup_date = datetime.combine(today, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
                 pickup_date = AEST.localize(pickup_date)
-                logger.info(f"[CI Auto Mode] Today: {today.strftime('%Y-%m-%d')}, Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (same day)")
+                console.print(f"[dim]Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (same day)[/dim]")
             else:
                 # Manual testing: pickup date is next day at 10 AM
                 next_day = today + timedelta(days=1)
                 pickup_date = datetime.combine(next_day, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
                 pickup_date = AEST.localize(pickup_date)
-                logger.info(f"[Manual Mode] Today: {today.strftime('%Y-%m-%d')}, Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (next day)")
+                console.print(f"[dim]Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (next day)[/dim]")
         
         # Return dates: Based on return_days config (e.g., [1, 7] means +1 day and +7 days from pickup)
         return_days = self.config['date_config']['return_days']
@@ -243,7 +252,7 @@ class DriveNowScraper:
             for days in return_days
         ]
         
-        logger.info(f"Return dates: {[d.strftime('%Y-%m-%d %H:%M') for d in return_dates]}")
+        console.print(f"[dim]Return dates: {', '.join([d.strftime('%Y-%m-%d') for d in return_dates])}[/dim]")
         
         return {
             'pickup': pickup_date,
@@ -346,7 +355,7 @@ class DriveNowScraper:
                     elements = page.query_selector_all(selector)
                     if elements and len(elements) > 0:
                         vehicle_elements = elements
-                        logger.info(f"Found {len(elements)} vehicle elements using selector: {selector}")
+                        logger.debug(f"Found {len(elements)} vehicle elements using selector: {selector}")
                         break
                 except:
                     continue
@@ -368,7 +377,7 @@ class DriveNowScraper:
                     try:
                         elements = page.query_selector_all(selector)
                         if elements:
-                            logger.info(f"Found {len(elements)} detail buttons using selector: {selector}")
+                            logger.debug(f"Found {len(elements)} detail buttons using selector: {selector}")
                             # Create vehicle entries for each button
                             for idx, btn in enumerate(elements):
                                 vehicles.append({
@@ -405,7 +414,7 @@ class DriveNowScraper:
             
             # If we found buttons directly, match them to vehicle elements
             if all_detail_buttons and len(all_detail_buttons) > 0:
-                logger.info(f"Found {len(all_detail_buttons)} detail buttons, matching to {len(vehicle_elements)} vehicle elements")
+                logger.debug(f"Found {len(all_detail_buttons)} detail buttons, matching to {len(vehicle_elements)} vehicle elements")
                 # Match buttons to vehicles (assuming same order)
                 for idx, element in enumerate(vehicle_elements):
                     if idx < len(all_detail_buttons):
@@ -482,7 +491,7 @@ class DriveNowScraper:
                         })
                 
                 if vehicles:
-                    logger.info(f"Found {len(vehicles)} vehicles with 'See Details' buttons")
+                    logger.debug(f"Found {len(vehicles)} vehicles with 'See Details' buttons")
                     return vehicles
             
             # Fallback: Extract vehicle info and find "See Details" buttons within each element
@@ -828,7 +837,7 @@ class DriveNowScraper:
                         try:
                             modal = detail_page.query_selector(selector)
                             if modal:
-                                logger.info(f"Found modal/overlay element: {selector}")
+                                logger.debug(f"Found modal/overlay element: {selector}")
                                 modal_found = True
                                 # Wait for modal content to load
                                 time.sleep(2)
@@ -998,7 +1007,7 @@ class DriveNowScraper:
                     logger.warning(f"No vehicles found for {city_name} ({pickup_date} to {return_date})")
                     continue
                 
-                logger.info(f"Found {len(vehicles)} vehicles")
+                logger.debug(f"Found {len(vehicles)} vehicles")
                 
                 if collect_only:
                     # Just collect data and URLs, no screenshots
@@ -1033,25 +1042,25 @@ class DriveNowScraper:
                             logger.error(f"Error saving vehicle {idx + 1}: {str(e)}")
                             continue
                     
-                    logger.info(f"Collection complete: Collected {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
+                    logger.debug(f"Collection complete: Collected {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
                 else:
                     # Screenshots are taken with results page screenshots
-                    logger.info(f"Found {len(vehicles)} vehicles, scraping details...")
+                    logger.debug(f"Found {len(vehicles)} vehicles, scraping details...")
                     results_url = self._build_results_url(city, pickup_date, return_date)
                     
                     # Use parallel processing if enabled
                     if self.parallel_enabled:
-                        logger.info(f"Using parallel processing with {self.workers} workers...")
+                        logger.debug(f"Using parallel processing with {self.workers} workers...")
                         self._scrape_vehicles_parallel(
                             vehicles, results_url, city_name, pickup_date, return_date,
                             scrape_date, scrape_timestamp, db, all_vehicles
                         )
                     else:
                         # Sequential processing
-                        logger.info("Using sequential processing...")
+                        logger.debug("Using sequential processing...")
                         for idx, vehicle in enumerate(vehicles):
                             try:
-                                logger.info(f"Processing vehicle {idx + 1}/{len(vehicles)}")
+                                logger.debug(f"Processing vehicle {idx + 1}/{len(vehicles)}")
                                 
                                 screenshot_path = self._scrape_vehicle_detail(
                                     self.page, vehicle, city_name, pickup_date, return_date, scrape_timestamp, results_url
@@ -1174,7 +1183,7 @@ class DriveNowScraper:
             batch_end = min(batch_start + self.batch_size, len(vehicles))
             batch = vehicles[batch_start:batch_end]
             
-            logger.info(f"Processing batch {batch_start//self.batch_size + 1}: vehicles {batch_start + 1}-{batch_end} of {len(vehicles)}")
+            logger.debug(f"Processing batch {batch_start//self.batch_size + 1}: vehicles {batch_start + 1}-{batch_end} of {len(vehicles)}")
             
             # Create tasks for all vehicles in batch
             tasks = []
@@ -1537,7 +1546,7 @@ class DriveNowScraper:
                 logger.warning(f"[Worker] No vehicles found for {city_name} ({pickup_date.date()} to {return_date.date()})")
                 return vehicles_collected
             
-            logger.info(f"[Worker] Found {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
+            logger.debug(f"[Worker] Found {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
             
             # Delete existing records for this combination to prevent duplicates
             with self.db_lock:
@@ -1616,7 +1625,7 @@ class DriveNowScraper:
                         try:
                             screenshot_path = future.result(timeout=120)  # Increased to 120 seconds for large screenshots
                             if self.use_cloud_storage and screenshot_path.startswith('http'):
-                                logger.info(f"[Worker] Uploaded screenshot to R2: {screenshot_path}")
+                                logger.debug(f"[Worker] Uploaded screenshot to R2: {screenshot_path}")
                         except concurrent.futures.TimeoutError:
                             logger.error(f"[Worker] Timeout compressing/uploading screenshot for {city_name} (120s exceeded)")
                             # Keep original path if timeout - continue with scraping
@@ -1626,7 +1635,7 @@ class DriveNowScraper:
                             # Keep original path if error
                             screenshot_path = original_screenshot_path
                     
-                    logger.info(f"[Worker] Captured results page screenshot for {city_name} ({pickup_date.date()} to {return_date.date()})")
+                    logger.debug(f"[Worker] Captured results page screenshot for {city_name} ({pickup_date.date()} to {return_date.date()})")
                 except Exception as e:
                     logger.error(f"[Worker] Error capturing screenshot for {city_name}: {str(e)}")
                     screenshot_path = None
@@ -1811,7 +1820,7 @@ class DriveNowScraper:
                             import time as time_module
                             self.last_depot_api_call_time = time_module.time()
                             
-                            logger.info(f"[Depot API] Fetched and cached {len(depot_lookup)} depots for {city_name}")
+                            logger.debug(f"[Depot API] Fetched and cached {len(depot_lookup)} depots for {city_name}")
                             return depot_lookup
                         elif response.status == 418:
                             # Rate limited - wait much longer before retry (exponential backoff with longer base delay)
@@ -2237,7 +2246,7 @@ class DriveNowScraper:
                     continue
             
             if vehicle_elements:
-                logger.info(f"[Async] Found {len(vehicle_elements)} vehicle elements using selector: {best_selector}")
+                logger.debug(f"[Async] Found {len(vehicle_elements)} vehicle elements using selector: {best_selector}")
                 
                 # Check for "Load More" or pagination buttons
                 load_more_selectors = [
@@ -2271,7 +2280,7 @@ class DriveNowScraper:
                                     
                                     await asyncio.sleep(1)  # Reduced from 2 seconds
                                     load_more_clicked = True
-                                    logger.info(f"[Async] Clicked 'Load More' button (attempt {load_more_attempt + 1})")
+                                    logger.debug(f"[Async] Clicked 'Load More' button (attempt {load_more_attempt + 1})")
                                     break
                         except:
                             continue
@@ -2283,7 +2292,7 @@ class DriveNowScraper:
                     elements = await page.query_selector_all(".veh-list-container")
                     if elements:
                         vehicle_elements = elements
-                        logger.info(f"[Async] Vehicle count after Load More: {len(elements)}")
+                        logger.debug(f"[Async] Vehicle count after Load More: {len(elements)}")
                 
                 # If we found some vehicles, scroll again and check if more appear (lazy loading)
                 previous_count = len(vehicle_elements)
@@ -2325,7 +2334,7 @@ class DriveNowScraper:
                             vehicle_elements = elements
                             previous_count = len(elements)
                             no_change_count = 0  # Reset counter
-                            logger.info(f"[Async] Found more vehicles after scroll ({len(elements)} total)")
+                            logger.debug(f"[Async] Found more vehicles after scroll ({len(elements)} total)")
                         else:
                             no_change_count += 1
                     except:
@@ -2333,7 +2342,7 @@ class DriveNowScraper:
                     
                     # If no new vehicles found after 3 consecutive scrolls, stop
                     if no_change_count >= 3:
-                        logger.info(f"[Async] No new vehicles found after {no_change_count} scroll attempts, stopping")
+                        logger.debug(f"[Async] No new vehicles found after {no_change_count} scroll attempts, stopping")
                         break
                 
                 # Final wait to ensure all content is loaded (reduced)
@@ -2349,7 +2358,7 @@ class DriveNowScraper:
                 elements = await page.query_selector_all(".veh-list-container")
                 if elements:
                     vehicle_elements = elements
-                    logger.info(f"[Async] Final vehicle count: {len(vehicle_elements)}")
+                    logger.debug(f"[Async] Final vehicle count: {len(vehicle_elements)}")
                 
                 # Scroll back to top (no wait needed)
                 await page.evaluate("window.scrollTo(0, 0)")
@@ -2379,7 +2388,7 @@ class DriveNowScraper:
                     continue
             
             # Process ALL vehicle elements - the container itself might have an href
-            logger.info(f"[Async] Processing {len(vehicle_elements)} vehicle elements...")
+            logger.debug(f"[Async] Processing {len(vehicle_elements)} vehicle elements...")
             
             for idx, element in enumerate(vehicle_elements):
                 see_details_button = None
@@ -2473,12 +2482,12 @@ class DriveNowScraper:
                 })
             
             if vehicles:
-                logger.info(f"[Async] Found {len(vehicles)} vehicles total")
+                logger.debug(f"[Async] Found {len(vehicles)} vehicles total")
                 return vehicles
             
             # If we found vehicle elements but no buttons yet, search within them
             if vehicle_elements and len(vehicle_elements) > 0:
-                logger.info(f"[Async] Found {len(vehicle_elements)} vehicle elements, searching for buttons within...")
+                logger.debug(f"[Async] Found {len(vehicle_elements)} vehicle elements, searching for buttons within...")
                 # Search for buttons within each vehicle element
                 for idx, element in enumerate(vehicle_elements):
                     # Skip if we already added this vehicle
@@ -2546,7 +2555,7 @@ class DriveNowScraper:
                         })
                 
                 if vehicles:
-                    logger.info(f"[Async] Found {len(vehicles)} vehicles with buttons")
+                    logger.debug(f"[Async] Found {len(vehicles)} vehicles with buttons")
                     return vehicles
             
             if not vehicle_elements:
@@ -2562,7 +2571,7 @@ class DriveNowScraper:
                     try:
                         elements = await page.query_selector_all(selector)
                         if elements:
-                            logger.info(f"Found {len(elements)} detail buttons using selector: {selector}")
+                            logger.debug(f"Found {len(elements)} detail buttons using selector: {selector}")
                             for idx, btn in enumerate(elements):
                                 vehicles.append({
                                     'index': idx,
@@ -2731,80 +2740,81 @@ class DriveNowScraper:
         
         # Generate all (city, date) combinations
         combinations = self._generate_all_combinations()
-        logger.info(f"Processing {len(combinations)} (city, date) combinations in parallel (with screenshots)...")
+        console.print(f"[bold cyan]Processing {len(combinations)} city-date combinations...[/bold cyan]")
         
         # Set up async browser with parallel workers
         await self._setup_async_browser(num_workers=self.workers)
         
-        # Pre-fetch depot data for all unique cities sequentially to avoid rate limiting
-        # This ensures depot data is cached before parallel processing starts
-        unique_cities = {}
-        for combo in combinations:
-            city_name = combo['city']['name']
-            if city_name not in unique_cities:
-                unique_cities[city_name] = combo['city']
-        
-        # Skip depot API pre-fetching for now - we'll just save depot_code and supplier_code
-        # logger.info(f"Pre-fetching depot data for {len(unique_cities)} cities sequentially...")
-        # Depot codes will be extracted directly from vehicle URLs/logos during scraping
-        
-        logger.info(f"Starting parallel vehicle collection (depot codes will be saved for later lookup)...")
-        
         scrape_datetime = get_aest_now().isoformat()
         
-        # Process in batches
+        # Process in batches with progress bar
         total_collected = 0
-        for batch_start in range(0, len(combinations), self.workers):
-            batch_end = min(batch_start + self.workers, len(combinations))
-            batch = combinations[batch_start:batch_end]
+        num_batches = (len(combinations) + self.workers - 1) // self.workers
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("({task.completed}/{task.total})"),
+            TimeElapsedColumn(),
+            console=console
+        ) as progress:
+            main_task = progress.add_task("[cyan]Scraping vehicles...", total=len(combinations))
             
-            logger.info(f"Processing batch {batch_start//self.workers + 1}: combinations {batch_start + 1}-{batch_end} of {len(combinations)}")
-            
-            # Create tasks for all combinations in batch
-            tasks = []
-            for combo in batch:
-                context = self.async_contexts[combo['city']['name'].__hash__() % len(self.async_contexts)]
-                task = self._collect_vehicle_data_worker_async(
-                    context, combo['city'], combo['pickup_date'], combo['return_date'],
-                    scrape_datetime, db
-                )
-                tasks.append((task, combo))
-            
-            # Run all tasks concurrently (but with staggered start to avoid simultaneous requests)
-            # Stagger the start of tasks slightly to avoid all hitting the server at once
-            async def create_staggered_task(task, idx):
-                # Stagger each task by a small random delay (0-2 seconds per task)
-                start_delay = random.uniform(0, 2.0) * idx
-                await asyncio.sleep(start_delay)
-                return await task
-            
-            staggered_tasks = [create_staggered_task(task, idx) for idx, (task, combo) in enumerate(tasks)]
-            results = await asyncio.gather(*staggered_tasks, return_exceptions=True)
-            
-            # Count collected vehicles
-            for (task, combo), result in zip(tasks, results):
-                try:
-                    if isinstance(result, Exception):
-                        logger.error(f"Error in task for {combo['city']['name']}: {str(result)}")
-                        continue
-                    
-                    if result:
-                        count = len(result)
-                        total_collected += count
-                        if count > 0:
-                            logger.info(f"✓ {combo['city']['name']} ({combo['pickup_date'].date()} to {combo['return_date'].date()}): {count} vehicles")
+            for batch_start in range(0, len(combinations), self.workers):
+                batch_end = min(batch_start + self.workers, len(combinations))
+                batch = combinations[batch_start:batch_end]
+                
+                # Create tasks for all combinations in batch
+                tasks = []
+                for combo in batch:
+                    context = self.async_contexts[combo['city']['name'].__hash__() % len(self.async_contexts)]
+                    task = self._collect_vehicle_data_worker_async(
+                        context, combo['city'], combo['pickup_date'], combo['return_date'],
+                        scrape_datetime, db
+                    )
+                    tasks.append((task, combo))
+                
+                # Run all tasks concurrently (but with staggered start to avoid simultaneous requests)
+                async def create_staggered_task(task, idx):
+                    # Stagger each task by a small random delay (0-2 seconds per task)
+                    start_delay = random.uniform(0, 2.0) * idx
+                    await asyncio.sleep(start_delay)
+                    return await task
+                
+                staggered_tasks = [create_staggered_task(task, idx) for idx, (task, combo) in enumerate(tasks)]
+                results = await asyncio.gather(*staggered_tasks, return_exceptions=True)
+                
+                # Count collected vehicles
+                for (task, combo), result in zip(tasks, results):
+                    try:
+                        if isinstance(result, Exception):
+                            logger.error(f"Error in task for {combo['city']['name']}: {str(result)}")
+                            progress.update(main_task, advance=1)
+                            continue
                         
-                        # Add delay after each successful combination to avoid detection
-                        post_combo_delay = random.uniform(self.random_delay_min, self.random_delay_max)
-                        await asyncio.sleep(post_combo_delay)
-                except Exception as e:
-                    logger.error(f"Error processing result: {str(e)}")
-            
-            # Longer delay between batches to avoid detection
-            if batch_end < len(combinations):
-                batch_delay = self.delay_between_batches + random.uniform(self.random_delay_min, self.random_delay_max)
-                logger.info(f"Waiting {batch_delay:.1f} seconds before next batch to avoid detection...")
-                await asyncio.sleep(batch_delay)
+                        if result:
+                            count = len(result)
+                            total_collected += count
+                            city_name = combo['city']['name']
+                            pickup = combo['pickup_date'].date()
+                            return_date = combo['return_date'].date()
+                            progress.update(main_task, advance=1, description=f"[cyan]Scraping vehicles... [green]{city_name} {pickup}→{return_date}: {count} vehicles[/green]")
+                            
+                            # Add delay after each successful combination to avoid detection
+                            post_combo_delay = random.uniform(self.random_delay_min, self.random_delay_max)
+                            await asyncio.sleep(post_combo_delay)
+                        else:
+                            progress.update(main_task, advance=1)
+                    except Exception as e:
+                        logger.error(f"Error processing result: {str(e)}")
+                        progress.update(main_task, advance=1)
+                
+                # Longer delay between batches to avoid detection
+                if batch_end < len(combinations):
+                    batch_delay = self.delay_between_batches + random.uniform(self.random_delay_min, self.random_delay_max)
+                    await asyncio.sleep(batch_delay)
         
         # Calculate and log collection duration
         collection_end_time = time.time()
@@ -2812,8 +2822,7 @@ class DriveNowScraper:
         minutes = int(collection_duration // 60)
         seconds = int(collection_duration % 60)
         
-        logger.info(f"Collection complete: Collected {total_collected} vehicles total")
-        logger.info(f"⏱️  Data collection time: {minutes}m {seconds}s ({collection_duration:.1f} seconds)")
+        console.print(f"[bold green]✓ Collection complete: {total_collected} vehicles collected in {minutes}m {seconds}s[/bold green]")
     
     def scrape_all(self, db) -> Dict[str, List[Dict]]:
         """
@@ -2824,9 +2833,9 @@ class DriveNowScraper:
         
         start_time = time.time()
         
-        logger.info("="*60)
-        logger.info("Collecting vehicle data and capturing results page screenshots...")
-        logger.info("="*60)
+        console.print("[bold blue]="*60)
+        console.print("[bold blue]DriveNow Scraper - Starting Collection[/bold blue]")
+        console.print("[bold blue]="*60)
         
         # Run collection in separate thread with event loop
         def run_collection():
@@ -2887,10 +2896,9 @@ class DriveNowScraper:
         except:
             pass
         
-        logger.info("="*60)
-        logger.info("Collection complete!")
-        logger.info(f"⏱️  Total scraping time: {minutes}m {seconds}s ({duration:.1f} seconds)")
-        logger.info("="*60)
+        console.print("[bold blue]="*60)
+        console.print(f"[bold green]✓ Collection complete! Total time: {minutes}m {seconds}s ({duration:.1f} seconds)[/bold green]")
+        console.print("[bold blue]="*60)
         
         # Return summary (vehicles are already in database)
         return {}
@@ -2941,7 +2949,7 @@ class DriveNowScraper:
     
     def close(self):
         """Close the browser and cleanup (fast, with timeouts)."""
-        logger.info("Closing all browsers and cleaning up...")
+        console.print("[dim]Closing browsers and cleaning up...[/dim]")
         
         # Close all parallel worker contexts (sync) - fast, ignore errors
         for context in self.contexts:
@@ -3017,4 +3025,4 @@ class DriveNowScraper:
                 pass
             self.playwright = None
         
-        logger.info("Browser cleanup completed")
+        console.print("[dim]✓ Cleanup completed[/dim]")

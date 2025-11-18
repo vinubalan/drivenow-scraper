@@ -9,13 +9,18 @@ import time
 from pathlib import Path
 from database import Database
 from scraper import DriveNowScraper
+from rich.console import Console
 
+# Set up console for clean output
+console = Console()
+
+# Configure logging - only warnings/errors to console, all to file
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Keep INFO for file logging
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('scraper.log'),
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler('scraper.log'),  # All logs to file
+        logging.StreamHandler(sys.stdout)  # Only warnings/errors to console (handled by scraper.py)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -34,19 +39,16 @@ def main():
             sys.exit(1)
         
         # Initialize database
-        logger.info("Initializing database...")
+        console.print("[dim]Initializing database...[/dim]")
         db = Database()
         
         # Initialize scraper
-        logger.info("Initializing scraper...")
+        console.print("[dim]Initializing scraper...[/dim]")
         scraper = DriveNowScraper(config_path)
         
         try:
             # Run collection (includes screenshots)
-            logger.info("="*60)
-            logger.info("Collecting vehicle data and capturing results page screenshots...")
-            logger.info("="*60)
-            logger.info(f"⏱️  Scraping started at {time.strftime('%H:%M:%S')}")
+            console.print(f"[dim]Scraping started at {time.strftime('%H:%M:%S')}[/dim]")
             
             # Run collection in separate thread with event loop
             import threading
@@ -83,9 +85,6 @@ def main():
             duration = end_time - start_time
             minutes = int(duration // 60)
             seconds = int(duration % 60)
-            logger.info("="*60)
-            logger.info(f"⏱️  TOTAL SCRAPING TIME: {minutes} minutes {seconds} seconds ({duration:.1f} seconds)")
-            logger.info("="*60)
             
             # Close async browser after collection - with timeout
             try:
@@ -126,28 +125,26 @@ def main():
             vehicles = db.get_vehicles_by_date(today)
             total_vehicles = len(vehicles)
             
-            logger.info("="*60)
-            logger.info("COLLECTION SUMMARY")
-            logger.info("="*60)
-            logger.info(f"Total vehicles collected: {total_vehicles}")
+            # Display summary
+            console.print("\n[bold cyan]Collection Summary[/bold cyan]")
+            console.print(f"Total vehicles collected: [bold]{total_vehicles}[/bold]")
             
             # Count by city
             from collections import Counter
             cities = Counter(v.get('city') for v in vehicles)
             for city, count in cities.items():
-                logger.info(f"  {city}: {count} vehicles")
+                console.print(f"  [cyan]{city}:[/cyan] {count} vehicles")
             
             vehicles_with_urls = sum(1 for v in vehicles if v.get('detail_url'))
             vehicles_with_screenshots = sum(1 for v in vehicles if v.get('screenshot_path'))
-            logger.info(f"Vehicles with detail URLs: {vehicles_with_urls}/{total_vehicles}")
-            logger.info(f"Vehicles with screenshots: {vehicles_with_screenshots}/{total_vehicles}")
-            logger.info("="*60)
+            console.print(f"\n[dim]Vehicles with URLs: {vehicles_with_urls}/{total_vehicles}[/dim]")
+            console.print(f"[dim]Vehicles with screenshots: {vehicles_with_screenshots}/{total_vehicles}[/dim]")
             
         except Exception as e:
             logger.error(f"Error during collection: {str(e)}", exc_info=True)
         finally:
             # Always cleanup
-            logger.info("Cleaning up and closing all browsers...")
+            console.print("[dim]Cleaning up...[/dim]")
             try:
                 scraper.close()
             except Exception as e:
@@ -158,10 +155,10 @@ def main():
             except Exception as e:
                 logger.warning(f"Error closing database: {str(e)}")
             
-            logger.info("Collection completed and all resources cleaned up")
+            console.print("[dim]✓ All resources cleaned up[/dim]")
     
     except KeyboardInterrupt:
-        logger.info("Collection interrupted by user")
+        console.print("[yellow]⚠ Collection interrupted by user[/yellow]")
         try:
             if 'scraper' in locals():
                 scraper.close()

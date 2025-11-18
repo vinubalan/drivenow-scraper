@@ -17,15 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 def clear_database():
-    """Clear all data from vehicles and screenshots tables."""
+    """Clear all data from vehicles table."""
     try:
         db = Database()
         
         try:
             # Clear all data
-            vehicle_count, screenshot_count = db.clear_all_data()
+            vehicle_count = db.clear_all_data()
             
-            logger.info(f"Deleted {vehicle_count} vehicles and {screenshot_count} screenshots")
+            logger.info(f"Deleted {vehicle_count} vehicles")
             logger.info("="*60)
             logger.info("Database cleared successfully!")
             logger.info("="*60)
@@ -43,7 +43,7 @@ def clear_database():
 
 if __name__ == "__main__":
     print("="*60)
-    print("WARNING: This will delete ALL data from vehicles and screenshots tables!")
+    print("WARNING: This will delete ALL data from vehicles table!")
     print("="*60)
     response = input("Are you sure you want to continue? (yes/no): ")
     
