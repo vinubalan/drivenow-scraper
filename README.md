@@ -220,7 +220,6 @@ The scraper creates a single `vehicles` table automatically:
 - `supplier_code`: Supplier code (extracted from logo URL)
 - `city_latitude`: City latitude
 - `city_longitude`: City longitude
-- `created_at`: Timestamp when record was created (AEST)
 
 **Note**: Screenshots are stored directly in the `vehicles` table via the `screenshot_path` column. One screenshot is captured per city-date combination, and all vehicles from that combination share the same screenshot path.
 

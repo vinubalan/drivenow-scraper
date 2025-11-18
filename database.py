@@ -57,6 +57,12 @@ class Database:
                 connect_timeout=10
             )
             self.conn.autocommit = False
+            
+            # Set session timezone to AEST so TIMESTAMPTZ values are displayed in AEST
+            cursor = self.conn.cursor()
+            cursor.execute("SET timezone = 'Australia/Sydney'")
+            cursor.close()
+            self.conn.commit()
         except Exception as e:
             raise ConnectionError(f"Failed to connect to Supabase database: {str(e)}")
     
@@ -66,13 +72,15 @@ class Database:
         
         try:
             # Vehicles table
+            # Use TIMESTAMPTZ (TIMESTAMP WITH TIME ZONE) to preserve timezone information
+            # All timestamps are stored in AEST timezone
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vehicles (
                     id SERIAL PRIMARY KEY,
-                    scrape_datetime TIMESTAMP NOT NULL,
+                    scrape_datetime TIMESTAMPTZ NOT NULL,
                     city VARCHAR(255) NOT NULL,
-                    pickup_date TIMESTAMP NOT NULL,
-                    return_date TIMESTAMP NOT NULL,
+                    pickup_date TIMESTAMPTZ NOT NULL,
+                    return_date TIMESTAMPTZ NOT NULL,
                     vehicle_name TEXT,
                     vehicle_type TEXT,
                     seats TEXT,
@@ -89,10 +97,48 @@ class Database:
                     depot_code VARCHAR(50),
                     supplier_code VARCHAR(50),
                     city_latitude NUMERIC(10, 8),
-                    city_longitude NUMERIC(11, 8),
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    city_longitude NUMERIC(11, 8)
                 )
             """)
+            
+            # Drop created_at column if it exists (redundant - scrape_datetime serves the same purpose)
+            try:
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='vehicles' AND column_name='created_at'
+                """)
+                if cursor.fetchone():
+                    cursor.execute("ALTER TABLE vehicles DROP COLUMN created_at")
+            except Exception as e:
+                # Ignore errors (column might not exist or other issues)
+                pass
+            
+            # Migrate existing TIMESTAMP columns to TIMESTAMPTZ if they exist
+            # This ensures timezone information is preserved
+            # Assumes existing TIMESTAMP data is stored in UTC (common for PostgreSQL)
+            timestamp_columns = ['scrape_datetime', 'pickup_date', 'return_date']
+            for column_name in timestamp_columns:
+                try:
+                    # Check current data type
+                    cursor.execute("""
+                        SELECT data_type 
+                        FROM information_schema.columns 
+                        WHERE table_name='vehicles' AND column_name=%s
+                    """, (column_name,))
+                    result = cursor.fetchone()
+                    if result and result[0] == 'timestamp without time zone':
+                        # Convert to TIMESTAMPTZ
+                        # Treat existing timestamp as UTC (preserves the actual moment in time)
+                        # TIMESTAMPTZ stores internally as UTC, so this conversion preserves the moment
+                        cursor.execute(f"""
+                            ALTER TABLE vehicles 
+                            ALTER COLUMN {column_name} TYPE TIMESTAMPTZ 
+                            USING {column_name} AT TIME ZONE 'UTC'
+                        """)
+                except Exception as e:
+                    # Ignore errors (column might not exist or already converted)
+                    pass
             
             # Create indexes for faster queries
             cursor.execute("""
@@ -216,10 +262,39 @@ class Database:
         cursor = self.conn.cursor()
         
         try:
-            # Parse datetime strings to TIMESTAMP
-            scrape_dt = datetime.fromisoformat(vehicle_data.get('scrape_datetime').replace('Z', '+00:00'))
-            pickup_dt = datetime.fromisoformat(vehicle_data.get('pickup_date').replace('Z', '+00:00'))
-            return_dt = datetime.fromisoformat(vehicle_data.get('return_date').replace('Z', '+00:00'))
+            # Parse datetime strings - ensure they're timezone-aware (AEST)
+            # scrape_datetime comes from get_aest_now() which is already AEST-aware
+            scrape_dt_str = vehicle_data.get('scrape_datetime')
+            if scrape_dt_str:
+                scrape_dt = datetime.fromisoformat(scrape_dt_str.replace('Z', '+00:00'))
+                # Ensure it's AEST-aware (if not already)
+                if scrape_dt.tzinfo is None:
+                    scrape_dt = AEST.localize(scrape_dt)
+                elif scrape_dt.tzinfo != AEST:
+                    scrape_dt = scrape_dt.astimezone(AEST)
+            else:
+                scrape_dt = get_aest_now()
+            
+            # pickup_date and return_date should also be AEST-aware
+            pickup_dt_str = vehicle_data.get('pickup_date')
+            if pickup_dt_str:
+                pickup_dt = datetime.fromisoformat(pickup_dt_str.replace('Z', '+00:00'))
+                if pickup_dt.tzinfo is None:
+                    pickup_dt = AEST.localize(pickup_dt)
+                elif pickup_dt.tzinfo != AEST:
+                    pickup_dt = pickup_dt.astimezone(AEST)
+            else:
+                raise ValueError("pickup_date is required")
+            
+            return_dt_str = vehicle_data.get('return_date')
+            if return_dt_str:
+                return_dt = datetime.fromisoformat(return_dt_str.replace('Z', '+00:00'))
+                if return_dt.tzinfo is None:
+                    return_dt = AEST.localize(return_dt)
+                elif return_dt.tzinfo != AEST:
+                    return_dt = return_dt.astimezone(AEST)
+            else:
+                raise ValueError("return_date is required")
             
             cursor.execute("""
                 INSERT INTO vehicles (
@@ -230,9 +305,8 @@ class Database:
                     price_per_day, total_price, currency,
                     detail_url, screenshot_path,
                     depot_code, supplier_code,
-                    city_latitude, city_longitude,
-                    created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    city_latitude, city_longitude
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 scrape_dt,
@@ -255,8 +329,7 @@ class Database:
                 vehicle_data.get('depot_code'),
                 vehicle_data.get('supplier_code'),
                 vehicle_data.get('city_latitude'),
-                vehicle_data.get('city_longitude'),
-                get_aest_now()
+                vehicle_data.get('city_longitude')
             ))
             
             vehicle_id = cursor.fetchone()[0]
