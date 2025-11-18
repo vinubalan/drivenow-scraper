@@ -50,8 +50,10 @@ scraper:
     # Enable parallel processing (set to true for 10x speed)
     enabled: true  # Enabled for maximum speed
     # Number of parallel workers for data collection
-    # Reduced significantly to avoid detection
-    workers: 5
+    # NOTE: Workers are AUTO-CONFIGURED based on return_days length
+    # If return_days: [1, 7, 14], workers = 3
+    # If return_days: [1, 2, 3, 4, 5, 6, 7], workers = 7
+    # Workers are automatically set to len(return_days) to process all dates for a city in parallel
   
   # Rate limiting to avoid getting blocked
   rate_limiting:

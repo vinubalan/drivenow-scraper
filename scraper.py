@@ -107,8 +107,17 @@ class DriveNowScraper:
         parallel_config = self.config['scraper'].get('parallel', {})
         self.parallel_enabled = parallel_config.get('enabled', False)
         self.batch_size = parallel_config.get('batch_size', 5)  # Still used in old sync path
-        # Parallel workers (for data collection)
-        self.workers = parallel_config.get('workers', 5)
+        
+        # Auto-configure workers based on return_days length
+        # If return_days is [1, 7, 14], workers = 3
+        # If return_days is [1, 2, 3, 4, 5, 6, 7], workers = 7
+        return_days = self.config['date_config'].get('return_days', [1, 7, 14])
+        auto_workers = len(return_days)
+        
+        # Always use auto-configured workers based on return_days length
+        # This ensures workers = number of return dates, allowing all dates for a city to be processed in parallel
+        self.workers = auto_workers
+        console.print(f"[dim]Auto-configured workers: {self.workers} (based on {len(return_days)} return days)[/dim]")
         
         self.playwright = None
         self.browser = None
@@ -1434,10 +1443,13 @@ class DriveNowScraper:
     
     def _generate_all_combinations(self) -> List[Dict]:
         """
-        Generate all (city, date) combinations for parallel processing.
+        Generate all (city, date) combinations grouped by city.
+        All dates for one city are grouped together before moving to next city.
+        This ensures city-wise scraping order.
         
         Returns:
-            List of dicts with 'city' and 'return_date' keys
+            List of dicts with 'city', 'pickup_date', and 'return_date' keys
+            Ordered by city (as in config.yaml), then by return_date
         """
         combinations = []
         cities = self.config['cities']
@@ -1445,6 +1457,7 @@ class DriveNowScraper:
         pickup_date = dates['pickup']
         return_dates = dates['returns']
         
+        # Generate combinations city-wise: all dates for city1, then all dates for city2, etc.
         for city in cities:
             for return_date in return_dates:
                 combinations.append({
@@ -2733,23 +2746,38 @@ class DriveNowScraper:
             return []
     
     async def _collect_all_vehicles_parallel_async(self, db):
-        """Collect all vehicle data and capture results page screenshots in parallel using flat parallelization."""
+        """
+        Collect all vehicle data and capture results page screenshots in parallel.
+        Processes city-wise: all dates for one city, then moves to next city.
+        """
         import time
         
         collection_start_time = time.time()
         
-        # Generate all (city, date) combinations
+        # Generate all (city, date) combinations (already grouped by city)
         combinations = self._generate_all_combinations()
-        console.print(f"[bold cyan]Processing {len(combinations)} city-date combinations...[/bold cyan]")
+        cities = self.config['cities']
+        dates = self._calculate_dates()
+        return_dates = dates['returns']
         
-        # Set up async browser with parallel workers
+        # Group combinations by city for city-wise processing
+        city_groups = {}
+        for combo in combinations:
+            city_name = combo['city']['name']
+            if city_name not in city_groups:
+                city_groups[city_name] = []
+            city_groups[city_name].append(combo)
+        
+        total_combinations = len(combinations)
+        console.print(f"[bold cyan]Processing {len(cities)} cities, {total_combinations} total combinations (city-wise)...[/bold cyan]")
+        
+        # Set up async browser with parallel workers (auto-configured based on return_days)
         await self._setup_async_browser(num_workers=self.workers)
         
         scrape_datetime = get_aest_now().isoformat()
         
-        # Process in batches with progress bar
+        # Process city-wise with progress bar
         total_collected = 0
-        num_batches = (len(combinations) + self.workers - 1) // self.workers
         
         with Progress(
             SpinnerColumn(),
@@ -2760,61 +2788,73 @@ class DriveNowScraper:
             TimeElapsedColumn(),
             console=console
         ) as progress:
-            main_task = progress.add_task("[cyan]Scraping vehicles...", total=len(combinations))
+            main_task = progress.add_task("[cyan]Scraping vehicles...", total=total_combinations)
             
-            for batch_start in range(0, len(combinations), self.workers):
-                batch_end = min(batch_start + self.workers, len(combinations))
-                batch = combinations[batch_start:batch_end]
+            # Process each city sequentially (all dates for one city in parallel)
+            for city_idx, city in enumerate(cities):
+                city_name = city['name']
+                city_combinations = city_groups.get(city_name, [])
                 
-                # Create tasks for all combinations in batch
-                tasks = []
-                for combo in batch:
-                    context = self.async_contexts[combo['city']['name'].__hash__() % len(self.async_contexts)]
-                    task = self._collect_vehicle_data_worker_async(
-                        context, combo['city'], combo['pickup_date'], combo['return_date'],
-                        scrape_datetime, db
-                    )
-                    tasks.append((task, combo))
+                if not city_combinations:
+                    continue
                 
-                # Run all tasks concurrently (but with staggered start to avoid simultaneous requests)
-                async def create_staggered_task(task, idx):
-                    # Stagger each task by a small random delay (0-2 seconds per task)
-                    start_delay = random.uniform(0, 2.0) * idx
-                    await asyncio.sleep(start_delay)
-                    return await task
+                console.print(f"[bold yellow]Processing {city_name} ({len(city_combinations)} date combinations)...[/bold yellow]")
                 
-                staggered_tasks = [create_staggered_task(task, idx) for idx, (task, combo) in enumerate(tasks)]
-                results = await asyncio.gather(*staggered_tasks, return_exceptions=True)
-                
-                # Count collected vehicles
-                for (task, combo), result in zip(tasks, results):
-                    try:
-                        if isinstance(result, Exception):
-                            logger.error(f"Error in task for {combo['city']['name']}: {str(result)}")
-                            progress.update(main_task, advance=1)
-                            continue
-                        
-                        if result:
-                            count = len(result)
-                            total_collected += count
-                            city_name = combo['city']['name']
-                            pickup = combo['pickup_date'].date()
-                            return_date = combo['return_date'].date()
-                            progress.update(main_task, advance=1, description=f"[cyan]Scraping vehicles... [green]{city_name} {pickup}→{return_date}: {count} vehicles[/green]")
+                # Process all dates for this city in parallel (using workers = number of return_days)
+                # Split city combinations into batches if needed (shouldn't be needed since workers = return_days count)
+                for batch_start in range(0, len(city_combinations), self.workers):
+                    batch_end = min(batch_start + self.workers, len(city_combinations))
+                    batch = city_combinations[batch_start:batch_end]
+                    
+                    # Create tasks for all date combinations in this city batch
+                    tasks = []
+                    for combo in batch:
+                        context = self.async_contexts[combo['city']['name'].__hash__() % len(self.async_contexts)]
+                        task = self._collect_vehicle_data_worker_async(
+                            context, combo['city'], combo['pickup_date'], combo['return_date'],
+                            scrape_datetime, db
+                        )
+                        tasks.append((task, combo))
+                    
+                    # Run all tasks concurrently (but with staggered start to avoid simultaneous requests)
+                    async def create_staggered_task(task, idx):
+                        # Stagger each task by a small random delay (0-2 seconds per task)
+                        start_delay = random.uniform(0, 2.0) * idx
+                        await asyncio.sleep(start_delay)
+                        return await task
+                    
+                    staggered_tasks = [create_staggered_task(task, idx) for idx, (task, combo) in enumerate(tasks)]
+                    results = await asyncio.gather(*staggered_tasks, return_exceptions=True)
+                    
+                    # Count collected vehicles
+                    for (task, combo), result in zip(tasks, results):
+                        try:
+                            if isinstance(result, Exception):
+                                logger.error(f"Error in task for {combo['city']['name']}: {str(result)}")
+                                progress.update(main_task, advance=1)
+                                continue
                             
-                            # Add delay after each successful combination to avoid detection
-                            post_combo_delay = random.uniform(self.random_delay_min, self.random_delay_max)
-                            await asyncio.sleep(post_combo_delay)
-                        else:
+                            if result:
+                                count = len(result)
+                                total_collected += count
+                                pickup = combo['pickup_date'].date()
+                                return_date = combo['return_date'].date()
+                                progress.update(main_task, advance=1, description=f"[cyan]Scraping vehicles... [green]{city_name} {pickup}→{return_date}: {count} vehicles[/green]")
+                                
+                                # Add delay after each successful combination to avoid detection
+                                post_combo_delay = random.uniform(self.random_delay_min, self.random_delay_max)
+                                await asyncio.sleep(post_combo_delay)
+                            else:
+                                progress.update(main_task, advance=1)
+                        except Exception as e:
+                            logger.error(f"Error processing result: {str(e)}")
                             progress.update(main_task, advance=1)
-                    except Exception as e:
-                        logger.error(f"Error processing result: {str(e)}")
-                        progress.update(main_task, advance=1)
                 
-                # Longer delay between batches to avoid detection
-                if batch_end < len(combinations):
-                    batch_delay = self.delay_between_batches + random.uniform(self.random_delay_min, self.random_delay_max)
-                    await asyncio.sleep(batch_delay)
+                # Longer delay between cities to avoid detection
+                if city_idx < len(cities) - 1:
+                    city_delay = self.delay_between_cities + random.uniform(self.random_delay_min, self.random_delay_max)
+                    console.print(f"[dim]Completed {city_name}. Waiting {city_delay:.1f}s before next city...[/dim]")
+                    await asyncio.sleep(city_delay)
         
         # Calculate and log collection duration
         collection_end_time = time.time()
