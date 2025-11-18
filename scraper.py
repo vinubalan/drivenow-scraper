@@ -2757,11 +2757,17 @@ class DriveNowScraper:
         
         # Upfront deletion: Delete all records for this pickup_date before scraping starts
         # This is faster than deleting per combination (single bulk delete vs multiple deletes)
+        # Also deletes associated screenshots from R2 if cloud storage is enabled
         pickup_date_str = pickup_date.isoformat()
         with self.db_lock:
-            deleted_count = db.delete_vehicles_for_pickup_date(pickup_date_str)
+            deleted_count, screenshots_deleted = db.delete_vehicles_for_pickup_date(
+                pickup_date_str, 
+                cloud_storage=self.cloud_storage if self.use_cloud_storage else None
+            )
             if deleted_count > 0:
                 console.print(f"[dim]Deleted {deleted_count} existing records for pickup_date {pickup_date.date()}[/dim]")
+            if screenshots_deleted > 0:
+                console.print(f"[dim]Deleted {screenshots_deleted} screenshots from R2 for pickup_date {pickup_date.date()}[/dim]")
         
         # Group combinations by city for city-wise processing
         city_groups = {}

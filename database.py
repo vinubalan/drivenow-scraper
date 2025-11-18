@@ -389,18 +389,22 @@ class Database:
         finally:
             cursor.close()
     
-    def delete_vehicles_for_pickup_date(self, pickup_date: str):
+    def delete_vehicles_for_pickup_date(self, pickup_date: str, cloud_storage=None):
         """
         Delete all vehicles for a specific pickup_date (across all cities and return dates).
+        Also deletes associated screenshots from R2 if cloud_storage is provided.
         This is faster than deleting per combination - single bulk delete operation.
         
         Args:
             pickup_date: Pickup date (ISO format, e.g., '2025-11-21T10:00:00+10:00' or '2025-11-21')
+            cloud_storage: Optional CloudflareR2Storage instance for deleting screenshots from R2
             
         Returns:
-            Number of records deleted
+            Tuple of (number of records deleted, number of screenshots deleted from R2)
         """
         cursor = self.conn.cursor()
+        screenshots_deleted = 0
+        
         try:
             # Parse pickup_date - handle both datetime and date-only formats
             try:
@@ -409,6 +413,45 @@ class Database:
                 # If parsing fails, try date-only format
                 pickup_dt = datetime.strptime(pickup_date.split('T')[0], '%Y-%m-%d')
             
+            # First, get all unique screenshot paths for this pickup_date before deleting
+            screenshot_paths_to_delete = set()
+            if cloud_storage:
+                cursor.execute("""
+                    SELECT DISTINCT screenshot_path 
+                    FROM vehicles 
+                    WHERE DATE(pickup_date) = DATE(%s)
+                    AND screenshot_path IS NOT NULL
+                    AND screenshot_path != ''
+                """, (pickup_dt,))
+                screenshot_paths = cursor.fetchall()
+                screenshot_paths_to_delete = {row[0] for row in screenshot_paths if row[0]}
+            
+            # Delete screenshots from R2 if cloud storage is enabled
+            if cloud_storage and screenshot_paths_to_delete:
+                from urllib.parse import urlparse
+                import os
+                
+                for screenshot_path in screenshot_paths_to_delete:
+                    try:
+                        # Extract R2 file path from URL or use path directly
+                        if screenshot_path.startswith('http'):
+                            # Extract path from URL (e.g., https://public-url.com/screenshots/file.jpg -> screenshots/file.jpg)
+                            parsed_url = urlparse(screenshot_path)
+                            # Remove leading slash
+                            r2_path = parsed_url.path.lstrip('/')
+                        else:
+                            # Local path - use as is (relative to bucket root)
+                            r2_path = screenshot_path.lstrip('/')
+                        
+                        # Delete from R2
+                        if cloud_storage.delete_file(r2_path):
+                            screenshots_deleted += 1
+                    except Exception as e:
+                        # Log error but continue - don't fail the whole operation
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Failed to delete screenshot from R2: {screenshot_path} - {str(e)}")
+            
             # Delete all records for this pickup_date (date part only, ignoring time)
             cursor.execute("""
                 DELETE FROM vehicles 
@@ -416,7 +459,7 @@ class Database:
             """, (pickup_dt,))
             deleted_count = cursor.rowcount
             self.conn.commit()
-            return deleted_count
+            return deleted_count, screenshots_deleted
         except Exception as e:
             self.conn.rollback()
             raise Exception(f"Failed to delete vehicles for pickup_date: {str(e)}")
