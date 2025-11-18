@@ -20,6 +20,12 @@ cities:
     longitude: 153.02809
     location_string: "Brisbane, Queensland, Australia"
     radius: 3.5
+  - name: "Adelaide"
+    code: "ADL"
+    latitude: -34.92908221667643
+    longitude: 138.60017495239254
+    location_string: "Adelaide, South Australia, Australia"
+    radius: 3.5
 
 # Date configuration
 date_config:
@@ -43,14 +49,9 @@ scraper:
   parallel:
     # Enable parallel processing (set to true for 10x speed)
     enabled: true  # Enabled for maximum speed
-    # Number of parallel workers for Phase 2 (screenshots)
-    # Reduced to avoid detection
-    workers: 5
-    # Batch size for processing vehicles in parallel (Phase 2)
-    batch_size: 5
-    # Number of parallel workers for Phase 1 (data collection)
+    # Number of parallel workers for data collection
     # Reduced significantly to avoid detection
-    phase1_workers: 5
+    workers: 5
   
   # Rate limiting to avoid getting blocked
   rate_limiting:

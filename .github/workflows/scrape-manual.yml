@@ -1,20 +1,20 @@
-name: Daily Scraper (Auto)
+name: Daily Scraper (Manual)
 
 on:
-  schedule:
-    # Run at 8:00 AM AEST every day
-    # AEST is UTC+10, so 8:00 AM AEST = 22:00 UTC (previous day)
-    # AEDT is UTC+11, so 8:00 AM AEDT = 21:00 UTC (previous day)
-    # Using 22:00 UTC to cover both AEST and AEDT (closer to AEST)
-    # Note: GitHub Actions uses UTC timezone
-    - cron: '0 22 * * *'  # 8:00 AM AEST (22:00 UTC previous day)
+  workflow_dispatch:
+    inputs:
+      pickup_date:
+        description: 'Pickup date (YYYY-MM-DD format, e.g., 2025-11-19)'
+        required: true
+        type: string
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     
     env:
-      CI: 'true'  # Set CI flag so scraper uses same-day pickup date
+      CI: 'true'  # Set CI flag
+      PICKUP_DATE: ${{ inputs.pickup_date }}  # Pass manual pickup date
     
     steps:
       - name: Checkout code
@@ -53,16 +53,26 @@ jobs:
           echo "R2_BUCKET_NAME=${{ secrets.R2_BUCKET_NAME }}" >> $GITHUB_ENV
           echo "R2_PUBLIC_URL=${{ secrets.R2_PUBLIC_URL }}" >> $GITHUB_ENV
       
+      - name: Validate pickup date format
+        run: |
+          if ! date -d "${{ inputs.pickup_date }}" >/dev/null 2>&1; then
+            echo "Error: Invalid date format. Expected YYYY-MM-DD (e.g., 2025-11-19)"
+            exit 1
+          fi
+          echo "✅ Pickup date validated: ${{ inputs.pickup_date }}"
+      
       - name: Run scraper
         run: |
+          echo "Running scraper with pickup date: ${{ inputs.pickup_date }}"
           python3 scrape.py
       
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scraper-logs
+          name: scraper-logs-manual
           path: |
             scraper.log
             *.log
           retention-days: 7
+

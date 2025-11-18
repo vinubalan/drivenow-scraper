@@ -7,9 +7,18 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
+import pytz
 
 # Load environment variables
 load_dotenv()
+
+# AEST timezone (handles both AEST UTC+10 and AEDT UTC+11 automatically)
+AEST = pytz.timezone('Australia/Sydney')
+
+
+def get_aest_now():
+    """Get current datetime in AEST timezone."""
+    return datetime.now(AEST)
 
 
 class Database:
@@ -77,6 +86,10 @@ class Database:
                     currency VARCHAR(10) DEFAULT 'AUD',
                     detail_url TEXT,
                     screenshot_path TEXT,
+                    depot_code VARCHAR(50),
+                    supplier_code VARCHAR(50),
+                    city_latitude NUMERIC(10, 8),
+                    city_longitude NUMERIC(11, 8),
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -112,6 +125,82 @@ class Database:
                 ON screenshots(scrape_datetime)
             """)
             
+            # Add depot_code and supplier_code columns if they don't exist (migration for existing databases)
+            depot_code_columns = [
+                ('depot_code', 'VARCHAR(50)'),
+                ('supplier_code', 'VARCHAR(50)'),
+            ]
+            
+            for column_name, column_type in depot_code_columns:
+                try:
+                    # Check if column exists
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='vehicles' AND column_name=%s
+                    """, (column_name,))
+                    if not cursor.fetchone():
+                        # Column doesn't exist, add it
+                        cursor.execute(f"""
+                            ALTER TABLE vehicles 
+                            ADD COLUMN {column_name} {column_type}
+                        """)
+                except Exception as e:
+                    # Ignore errors (column might already exist or other issues)
+                    pass
+            
+            # Remove old depot info columns if they exist (cleanup migration)
+            old_depot_columns = [
+                'depot_name',
+                'depot_address',
+                'depot_city',
+                'depot_postcode',
+                'depot_phone',
+            ]
+            
+            for column_name in old_depot_columns:
+                try:
+                    # Check if column exists
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='vehicles' AND column_name=%s
+                    """, (column_name,))
+                    if cursor.fetchone():
+                        # Column exists, drop it
+                        cursor.execute(f"""
+                            ALTER TABLE vehicles 
+                            DROP COLUMN {column_name}
+                        """)
+                        logger.info(f"Dropped unused column: {column_name}")
+                except Exception as e:
+                    # Ignore errors (column might not exist or other issues)
+                    pass
+            
+            # Add city location columns if they don't exist (migration for existing databases)
+            city_location_columns = [
+                ('city_latitude', 'NUMERIC(10, 8)'),
+                ('city_longitude', 'NUMERIC(11, 8)'),
+            ]
+            
+            for column_name, column_type in city_location_columns:
+                try:
+                    # Check if column exists
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='vehicles' AND column_name=%s
+                    """, (column_name,))
+                    if not cursor.fetchone():
+                        # Column doesn't exist, add it
+                        cursor.execute(f"""
+                            ALTER TABLE vehicles 
+                            ADD COLUMN {column_name} {column_type}
+                        """)
+                except Exception as e:
+                    # Ignore errors (column might already exist or other issues)
+                    pass
+            
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
@@ -144,8 +233,11 @@ class Database:
                     seats, doors, transmission, excess,
                     fuel_type, logo_url,
                     price_per_day, total_price, currency,
-                    detail_url, screenshot_path, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    detail_url, screenshot_path,
+                    depot_code, supplier_code,
+                    city_latitude, city_longitude,
+                    created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 scrape_dt,
@@ -165,7 +257,11 @@ class Database:
                 vehicle_data.get('currency', 'AUD'),
                 vehicle_data.get('detail_url'),
                 vehicle_data.get('screenshot_path'),
-                datetime.now()
+                vehicle_data.get('depot_code'),
+                vehicle_data.get('supplier_code'),
+                vehicle_data.get('city_latitude'),
+                vehicle_data.get('city_longitude'),
+                get_aest_now()
             ))
             
             vehicle_id = cursor.fetchone()[0]
@@ -207,7 +303,7 @@ class Database:
                 pickup_dt,
                 return_dt,
                 screenshot_data.get('screenshot_path'),
-                datetime.now()
+                get_aest_now()
             ))
             
             screenshot_id = cursor.fetchone()[0]
@@ -375,6 +471,37 @@ class Database:
         except Exception as e:
             self.conn.rollback()
             raise Exception(f"Failed to delete vehicles: {str(e)}")
+        finally:
+            cursor.close()
+    
+    def clear_all_data(self):
+        """
+        Clear all data from vehicles and screenshots tables.
+        WARNING: This will delete ALL records!
+        
+        Returns:
+            Tuple of (vehicles_deleted, screenshots_deleted)
+        """
+        cursor = self.conn.cursor()
+        try:
+            # Get counts before deletion
+            cursor.execute("SELECT COUNT(*) FROM vehicles")
+            vehicle_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM screenshots")
+            screenshot_count = cursor.fetchone()[0]
+            
+            # Clear vehicles table
+            cursor.execute("TRUNCATE TABLE vehicles RESTART IDENTITY CASCADE")
+            
+            # Clear screenshots table
+            cursor.execute("TRUNCATE TABLE screenshots RESTART IDENTITY CASCADE")
+            
+            self.conn.commit()
+            return (vehicle_count, screenshot_count)
+        except Exception as e:
+            self.conn.rollback()
+            raise Exception(f"Failed to clear database: {str(e)}")
         finally:
             cursor.close()
     

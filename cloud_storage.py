@@ -127,4 +127,57 @@ class CloudflareR2Storage:
             if e.response['Error']['Code'] == '404':
                 return False
             raise
+    
+    def list_all_files(self, prefix: str = '') -> list:
+        """
+        List all files in the R2 bucket, optionally filtered by prefix.
+        
+        Args:
+            prefix: Optional prefix to filter files (e.g., 'screenshots/')
+            
+        Returns:
+            List of file paths/keys
+        """
+        try:
+            files = []
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=prefix)
+            
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        files.append(obj['Key'])
+            
+            return files
+        except ClientError as e:
+            logger.error(f"Failed to list files from R2: {str(e)}")
+            raise
+    
+    def delete_all_files(self, prefix: str = '') -> int:
+        """
+        Delete all files from R2 bucket, optionally filtered by prefix.
+        
+        Args:
+            prefix: Optional prefix to filter files (e.g., 'screenshots/')
+            
+        Returns:
+            Number of files deleted
+        """
+        try:
+            files = self.list_all_files(prefix=prefix)
+            
+            if not files:
+                logger.info(f"No files found with prefix '{prefix}'")
+                return 0
+            
+            deleted_count = 0
+            for file_path in files:
+                if self.delete_file(file_path):
+                    deleted_count += 1
+            
+            logger.info(f"Deleted {deleted_count} files from R2 (prefix: '{prefix}')")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Failed to delete all files from R2: {str(e)}")
+            raise
 

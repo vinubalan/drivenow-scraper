@@ -5,6 +5,7 @@ This single phase collects all vehicle data and takes one screenshot per city-da
 """
 import sys
 import logging
+import time
 from pathlib import Path
 from database import Database
 from scraper import DriveNowScraper
@@ -13,7 +14,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('phase1.log'),
+        logging.FileHandler('scraper.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Run scraper: Collect vehicle data and capture results page screenshots."""
+    # Start timing
+    start_time = time.time()
+    
     try:
         # Load configuration
         config_path = "config.yaml"
@@ -42,6 +46,7 @@ def main():
             logger.info("="*60)
             logger.info("Collecting vehicle data and capturing results page screenshots...")
             logger.info("="*60)
+            logger.info(f"⏱️  Scraping started at {time.strftime('%H:%M:%S')}")
             
             # Run collection in separate thread with event loop
             import threading
@@ -72,6 +77,15 @@ def main():
             collection_thread = threading.Thread(target=run_collection, daemon=False)
             collection_thread.start()
             collection_thread.join()
+            
+            # Calculate and log total scraping duration
+            end_time = time.time()
+            duration = end_time - start_time
+            minutes = int(duration // 60)
+            seconds = int(duration % 60)
+            logger.info("="*60)
+            logger.info(f"⏱️  TOTAL SCRAPING TIME: {minutes} minutes {seconds} seconds ({duration:.1f} seconds)")
+            logger.info("="*60)
             
             # Close async browser after collection - with timeout
             try:

@@ -1,51 +1,80 @@
 # DriveNow Scraper
 
-A Python-based web scraper for collecting hire car vehicle listings from [DriveNow.com.au](https://www.drivenow.com.au/). The scraper runs daily via GitHub Actions, collects vehicle data, takes screenshots, and stores everything in Supabase (PostgreSQL) with screenshots in Cloudflare R2 for historical analysis.
+A Python-based web scraper for collecting hire car vehicle listings from [DriveNow.com.au](https://www.drivenow.com.au/). The scraper runs daily via GitHub Actions, collects vehicle data, captures full-page screenshots of results pages, and stores everything in Supabase (PostgreSQL) with screenshots in Cloudflare R2 for historical analysis.
 
 ## Features
 
-- **Configurable Cities**: Start with Sydney, Melbourne, and Brisbane (easily expandable)
+- **Configurable Cities**: Sydney, Melbourne, Brisbane, and Adelaide (easily expandable)
 - **Automatic Date Calculation**: 
-  - Pickup date: Next day at 10:00 AM
-  - Return dates: +1, +2, +3, +4, +5, +6, +7 days at 10:00 AM
-- **Individual Vehicle Screenshots**: Clicks "See Details" for each vehicle and captures a screenshot of the detail page
+  - **Auto Workflow**: Pickup date is same day at 10:00 AM AEST (runs at 8:00 AM AEST)
+  - **Manual Workflow**: Specify custom pickup date
+  - **Local Testing**: Pickup date is next day at 10:00 AM AEST
+  - Return dates: Configurable (default: +1, +7, +14 days at 10:00 AM AEST)
+- **Full-Page Screenshots**: One screenshot per city-date combination with watermarks showing screenshot time
+- **Parallel Processing**: Fast scraping with multiple workers (configurable)
 - **Rate Limiting**: Built-in delays and randomization to avoid getting blocked
 - **Anti-Detection**: User agent rotation, viewport randomization, and stealth features
 - **Cloud Database**: Stores all vehicle data in Supabase (PostgreSQL)
-- **Cloud Storage**: Screenshots stored in Cloudflare R2
-- **GitHub Actions**: Automated daily runs at 10 AM with manual trigger support
+- **Cloud Storage**: Screenshots stored in Cloudflare R2 with compression
+- **GitHub Actions**: Automated daily runs at 8:00 AM AEST with manual trigger support
 - **Robust Error Handling**: Continues scraping even if individual searches fail
+- **AEST Timezone**: All timestamps are in Australian Eastern Standard Time
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.11 or higher
 - Internet connection
+- Supabase account (PostgreSQL database)
+- Cloudflare R2 account (for screenshot storage)
 
 ## Installation
 
-1. Clone or download this repository
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd drivenow-scraper
+   ```
 
-2. Install Python dependencies:
-```bash
-pip install -r requirements.txt
-```
+2. **Create virtual environment (recommended):**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
 
-3. Install Playwright browsers:
-```bash
-playwright install chromium
-```
+3. **Install Python dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-4. Set up environment variables:
-   - Copy `.env.example` to `.env`
-   - Fill in your Supabase database credentials
-   - Fill in your Cloudflare R2 credentials
+4. **Install Playwright browsers:**
+   ```bash
+   playwright install chromium
+   ```
 
-5. Configure Supabase:
+5. **Set up environment variables:**
+   Create a `.env` file in the project root with the following variables:
+   ```bash
+   # Database (Supabase PostgreSQL)
+   DB_HOST=your-supabase-host
+   DB_PORT=5432
+   DB_NAME=postgres
+   DB_USER=postgres
+   DB_PASSWORD=your-database-password
+   
+   # Cloudflare R2
+   R2_ACCOUNT_ID=your-r2-account-id
+   R2_ACCESS_KEY_ID=your-r2-access-key-id
+   R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
+   R2_BUCKET_NAME=your-bucket-name
+   R2_PUBLIC_URL=https://your-public-url.com  # Optional
+   ```
+
+6. **Configure Supabase:**
    - Create a Supabase project
    - Get your database connection details from Supabase dashboard
-   - The tables will be created automatically on first run
+   - The tables (`vehicles` and `screenshots`) will be created automatically on first run
 
-6. Configure Cloudflare R2:
+7. **Configure Cloudflare R2:**
    - Create an R2 bucket in Cloudflare dashboard
    - Create API tokens with read/write access
    - Optionally set up a public URL for accessing screenshots
@@ -54,13 +83,14 @@ playwright install chromium
 
 Edit `config.yaml` to customize:
 
-- **Cities**: Add or remove cities to scrape
-- **Date ranges**: Modify return days (currently +1 to +7 days)
+- **Cities**: Add or remove cities to scrape (includes latitude, longitude, location string, and radius)
+- **Date ranges**: Modify return days (currently +1, +7, +14 days)
 - **Times**: Change pickup/return times (currently 10:00 AM)
 - **Screenshot settings**: Enable/disable screenshots, change directory
 - **Rate limiting**: Adjust delays between requests, vehicles, and cities
 - **Anti-detection**: Configure user agent rotation and viewport randomization
 - **Browser settings**: Toggle headless mode, adjust window size
+- **Parallel processing**: Configure number of workers for faster scraping
 
 ### Example Configuration
 
@@ -68,70 +98,128 @@ Edit `config.yaml` to customize:
 cities:
   - name: "Sydney"
     code: "SYD"
-  - name: "Melbourne"
-    code: "MEL"
-  - name: "Brisbane"
-    code: "BNE"
+    latitude: -33.86706149922719
+    longitude: 151.2155219586914
+    location_string: "Sydney, New South Wales, Australia"
+    radius: 3
 
 date_config:
   pickup_time: "10:00"
   return_time: "10:00"
-  return_days: [1, 2, 3, 4, 5, 6, 7]
+  return_days: [1, 7, 14]
+
+scraper:
+  parallel:
+    enabled: true
+    workers: 5
+  rate_limiting:
+    delay_between_requests: 3.0
+    delay_between_vehicles: 2.0
+    delay_between_cities: 5.0
 ```
 
 ## Usage
 
-### Run the Scraper
+### Run the Scraper Locally
 
 ```bash
-python main.py
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run scraper (uses next-day pickup date for local testing)
+python3 scrape.py
 ```
 
 The scraper will:
-1. Calculate dates (next day + return dates)
-2. For each city, search for vehicles for each date range
-3. For each vehicle found, click "See Details" button
-4. Wait for detail page to load and take a screenshot
-5. Extract vehicle information (name, price, category, etc.)
-6. Save vehicle data and screenshot to database
-7. Return to results page and repeat for next vehicle
+1. Calculate dates based on mode (local = next day, CI = same day, manual = specified date)
+2. For each city and date combination:
+   - Navigate to the results page
+   - Wait for page to fully load
+   - Extract all vehicle listings
+   - Capture a full-page screenshot with watermark
+   - Compress and upload screenshot to R2
+   - Save vehicle data to database
+3. Log progress and timing information
 
-**Note**: Each vehicle gets its own screenshot. If there are 25 vehicles, you'll get 25 screenshots.
+### Utility Scripts
 
-### View Logs
+**Clear Database:**
+```bash
+python3 clear_database.py
+```
 
-Logs are written to both console and `scraper.log` file.
+**Clear R2 Screenshots:**
+```bash
+python3 clear_r2_screenshots.py
+```
+
+**Test Workflow Locally:**
+```bash
+# Test auto workflow (same-day pickup)
+export CI='true'
+python3 scrape.py
+
+# Test manual workflow (specific pickup date)
+export CI='true'
+export PICKUP_DATE='2025-11-19'
+python3 scrape.py
+```
+
+See `README-WORKFLOWS.md` for more details on testing workflows locally.
+
+### Using Makefile
+
+```bash
+# Run scraper
+make scrape
+
+# Check database status
+make check
+
+# Clean logs and local screenshots
+make clean
+
+# Show help
+make help
+```
 
 ## Database Schema
 
-The scraper creates two tables:
+The scraper creates two tables automatically:
 
 ### `vehicles` table
 - `id`: Primary key
-- `scrape_date`: Date when scraping occurred (YYYY-MM-DD)
-- `scrape_timestamp`: Full timestamp of scrape
+- `scrape_datetime`: Timestamp when scraping occurred (AEST)
 - `city`: City name
-- `pickup_date`: Pickup date and time (ISO format)
-- `return_date`: Return date and time (ISO format)
+- `pickup_date`: Pickup date and time (AEST)
+- `return_date`: Return date and time (AEST)
 - `vehicle_name`: Name of the vehicle
-- `vehicle_category`: Category/type of vehicle
-- `price_per_day`: Price per day (if available)
+- `vehicle_type`: Type/category of vehicle
+- `seats`: Number of seats
+- `doors`: Number of doors
+- `transmission`: Transmission type
+- `excess`: Excess amount
+- `fuel_type`: Fuel type (Electric, Hybrid, etc.)
+- `logo_url`: Provider logo URL
+- `price_per_day`: Price per day
 - `total_price`: Total price for the rental period
 - `currency`: Currency (default: AUD)
-- `availability`: Availability status
-- `vehicle_details`: JSON string with additional details
-- `screenshot_path`: Path to screenshot file
-- `created_at`: Timestamp when record was created
+- `detail_url`: URL to vehicle detail page
+- `screenshot_path`: Path/URL to screenshot
+- `depot_code`: Depot code (extracted from URL)
+- `supplier_code`: Supplier code (extracted from logo URL)
+- `city_latitude`: City latitude
+- `city_longitude`: City longitude
+- `created_at`: Timestamp when record was created (AEST)
 
 ### `screenshots` table
 - `id`: Primary key
-- `scrape_date`: Date when scraping occurred
-- `scrape_timestamp`: Full timestamp of scrape
+- `scrape_datetime`: Timestamp when scraping occurred (AEST)
 - `city`: City name
-- `pickup_date`: Pickup date and time
-- `return_date`: Return date and time
-- `screenshot_path`: Path to screenshot file
-- `created_at`: Timestamp when record was created
+- `pickup_date`: Pickup date and time (AEST)
+- `return_date`: Return date and time (AEST)
+- `screenshot_path`: Path/URL to screenshot
+- `created_at`: Timestamp when record was created (AEST)
 
 ## Querying the Database
 
@@ -145,7 +233,7 @@ SELECT * FROM vehicles WHERE DATE(scrape_datetime) = CURRENT_DATE;
 
 -- Get vehicles for a specific city and date
 SELECT * FROM vehicles 
-WHERE city = 'Sydney' AND DATE(scrape_datetime) = '2024-01-15';
+WHERE city = 'Sydney' AND DATE(scrape_datetime) = '2025-11-19';
 
 -- Get all screenshots for a city
 SELECT * FROM screenshots WHERE city = 'Melbourne';
@@ -159,64 +247,69 @@ GROUP BY city;
 SELECT * FROM vehicles 
 WHERE screenshot_path IS NOT NULL 
 AND screenshot_path != '';
+
+-- Get average prices by city
+SELECT city, AVG(CAST(REPLACE(total_price, '$', '') AS NUMERIC)) as avg_price
+FROM vehicles
+WHERE total_price IS NOT NULL
+GROUP BY city;
 ```
 
-## Project Structure
+## GitHub Actions
 
-```
-drivenow-scraper/
-├── main.py              # Main script to run scraper
-├── scraper.py           # Core scraping logic
-├── database.py          # Database operations
-├── config.yaml          # Configuration file
-├── requirements.txt     # Python dependencies
-├── README.md           # This file
-├── .env                # Environment variables (not in git)
-├── .env.example        # Environment variables template
-├── .github/
-│   └── workflows/
-│       └── scrape.yml  # GitHub Actions workflow
-├── screenshots/        # Temporary screenshot directory (local only)
-└── *.log               # Log files
-```
+The scraper includes two GitHub Actions workflows:
 
-## GitHub Actions Setup
+### 1. Auto Workflow (`.github/workflows/scrape.yml`)
+- Runs automatically at **8:00 AM AEST** every day
+- Uses **same-day pickup date** at 10:00 AM AEST
+- Example: If it runs on Nov 19 at 8am, pickup date is Nov 19 at 10:00 AM AEST
 
-The scraper is configured to run automatically via GitHub Actions.
-
-### Automatic Daily Run
-
-The workflow runs daily at 10:00 AM UTC (configured in `.github/workflows/scrape.yml`).
-
-### Manual Trigger
-
-You can manually trigger the scraper from GitHub Actions:
-
-1. Go to your repository on GitHub
-2. Click on "Actions" tab
-3. Select "Scrape DriveNow Data" workflow
-4. Click "Run workflow"
-5. Optionally specify a date to scrape (YYYY-MM-DD format)
-6. Click "Run workflow" button
+### 2. Manual Workflow (`.github/workflows/scrape-manual.yml`)
+- Triggered manually via GitHub Actions UI
+- Requires a pickup date input (format: `YYYY-MM-DD`, e.g., `2025-11-19`)
+- Uses the specified pickup date at 10:00 AM AEST
 
 ### Required GitHub Secrets
 
 Add these secrets to your GitHub repository (Settings → Secrets and variables → Actions):
 
-- `SUPABASE_DB_HOST`: Your Supabase database host
-- `SUPABASE_DB_PORT`: Database port (usually 5432)
-- `SUPABASE_DB_NAME`: Database name (usually "postgres")
-- `SUPABASE_DB_USER`: Database user (usually "postgres")
-- `SUPABASE_DB_PASSWORD`: Your Supabase database password
-- `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare account ID
-- `CLOUDFLARE_R2_ACCESS_KEY_ID`: R2 access key ID
-- `CLOUDFLARE_R2_SECRET_ACCESS_KEY`: R2 secret access key
-- `CLOUDFLARE_R2_BUCKET_NAME`: Your R2 bucket name
-- `CLOUDFLARE_R2_PUBLIC_URL`: (Optional) Public URL for accessing screenshots
+- `DB_HOST`: Your Supabase database host
+- `DB_PORT`: Database port (usually 5432)
+- `DB_NAME`: Database name (usually "postgres")
+- `DB_USER`: Database user (usually "postgres")
+- `DB_PASSWORD`: Your Supabase database password
+- `R2_ACCOUNT_ID`: Your Cloudflare R2 account ID
+- `R2_ACCESS_KEY_ID`: R2 access key ID
+- `R2_SECRET_ACCESS_KEY`: R2 secret access key
+- `R2_BUCKET_NAME`: Your R2 bucket name
+- `R2_PUBLIC_URL`: (Optional) Public URL for accessing screenshots
 
-### Local Development
+See `README-WORKFLOWS.md` for detailed information on testing workflows locally.
 
-For local development, create a `.env` file with the same variables (see `.env.example`).
+## Project Structure
+
+```
+drivenow-scraper/
+├── scrape.py                  # Main entry point script
+├── scraper.py                 # Core scraping logic
+├── database.py                # Database operations (Supabase)
+├── cloud_storage.py           # Cloudflare R2 storage operations
+├── clear_database.py          # Utility: Clear database tables
+├── clear_r2_screenshots.py    # Utility: Clear R2 screenshots
+├── config.yaml                # Configuration file
+├── requirements.txt           # Python dependencies
+├── Makefile                   # Make commands for common tasks
+├── test-workflow-local.sh     # Script to test workflows locally
+├── README.md                  # This file
+├── README-WORKFLOWS.md        # Workflow testing documentation
+├── LICENSE                    # Apache License 2.0
+├── .env                       # Environment variables (not in git)
+├── .github/
+│   └── workflows/
+│       ├── scrape.yml         # Auto workflow (daily at 8am AEST)
+│       └── scrape-manual.yml  # Manual workflow (with pickup date input)
+└── screenshots/               # Local screenshot directory (temporary)
+```
 
 ## Troubleshooting
 
@@ -226,45 +319,47 @@ For local development, create a `.env` file with the same variables (see `.env.e
 
 ### Rate Limiting and Blocking
 - If you're getting blocked, increase delays in `config.yaml`:
-  - `delay_between_requests`: Increase to 3-5 seconds
-  - `delay_between_vehicles`: Increase to 2-3 seconds
-  - `delay_between_cities`: Increase to 5-10 seconds
+  - `delay_between_requests`: Increase to 5-10 seconds
+  - `delay_between_vehicles`: Increase to 3-5 seconds
+  - `delay_between_cities`: Increase to 10-15 seconds
+- Reduce `workers` in parallel config to avoid detection
 - The scraper includes random delays to avoid detection patterns
-- For large-scale scraping (50+ cities), consider running during off-peak hours
 
 ### Website Structure Changes
 - If scraping fails, the website structure may have changed
 - Check `scraper.log` for error messages
-- You may need to update CSS selectors in `scraper.py` for "See Details" buttons
+- You may need to update CSS selectors in `scraper.py`
 - Try running with `headless: false` in `config.yaml` to see what's happening
 
 ### No Vehicles Found
 - The website may require different selectors
 - Check if the website has changed its HTML structure
-- Verify the URL pattern is still correct
+- Verify the URL pattern is still correct in `config.yaml`
 - Check if the website requires cookies or has anti-bot protection
 
-### "See Details" Button Not Found
-- The button text or selector may have changed
-- Check `scraper.log` to see which selectors are being tried
-- You may need to update the `detail_selectors` list in `_get_vehicle_listings()` method
+### Database Connection Issues
+- Verify your `.env` file has correct Supabase credentials
+- Check if your Supabase project is active
+- Ensure your IP is whitelisted in Supabase (if required)
 
-## Future Enhancements
+### R2 Storage Issues
+- Verify your `.env` file has correct R2 credentials
+- Check if your R2 bucket exists and is accessible
+- Verify API tokens have correct permissions
 
-- Web application for querying historical data
-- Support for more cities
-- Email notifications on scraping completion
-- Data export functionality (CSV, JSON)
-- Price change alerts
-- API endpoints for data access
+### Screenshot Issues
+- Screenshots are compressed and watermarked automatically
+- Large screenshots may take time to process (timeout is 120 seconds)
+- Check R2 bucket permissions if uploads fail
 
 ## Notes
 
 - **Respect Website Terms**: Ensure your scraping activities comply with DriveNow's terms of service
 - **Rate Limiting**: The scraper includes delays between requests to be respectful
 - **Data Accuracy**: Vehicle data depends on the website's current structure and may need periodic updates
+- **Timezone**: All timestamps are stored in AEST (Australian Eastern Standard Time)
+- **Screenshots**: Full-page screenshots are compressed (JPEG) and include watermarks with screenshot time
 
 ## License
 
 Apache License 2.0
-

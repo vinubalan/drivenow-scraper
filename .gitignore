@@ -31,7 +31,7 @@ ENV/
 *.sqlite
 *.sqlite3
 
-# Screenshots
+# Screenshots (local only, R2 stores the actual screenshots)
 screenshots/
 *.png
 *.jpg
@@ -40,6 +40,13 @@ screenshots/
 # Logs
 *.log
 scraper.log
+phase*.log
+test*.log
+
+# Inspection/debug files
+*_inspection.json
+depot_api_inspection.json
+view_depots_inspection.json
 
 # IDE
 .vscode/

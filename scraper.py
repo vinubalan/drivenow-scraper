@@ -14,15 +14,25 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import asyncio
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+import pytz
 import os
 from cloud_storage import CloudflareR2Storage
+import re
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# AEST timezone (handles both AEST UTC+10 and AEDT UTC+11 automatically)
+AEST = pytz.timezone('Australia/Sydney')
+
+
+def get_aest_now():
+    """Get current datetime in AEST timezone."""
+    return datetime.now(AEST)
 
 
 # User agents for rotation
@@ -87,10 +97,9 @@ class DriveNowScraper:
         # Parallel processing settings
         parallel_config = self.config['scraper'].get('parallel', {})
         self.parallel_enabled = parallel_config.get('enabled', False)
-        self.parallel_workers = parallel_config.get('workers', 5)
-        self.batch_size = parallel_config.get('batch_size', 5)
-        # Phase 1 parallel workers (for data collection)
-        self.phase1_workers = parallel_config.get('phase1_workers', 25)
+        self.batch_size = parallel_config.get('batch_size', 5)  # Still used in old sync path
+        # Parallel workers (for data collection)
+        self.workers = parallel_config.get('workers', 5)
         
         self.playwright = None
         self.browser = None
@@ -100,6 +109,9 @@ class DriveNowScraper:
         self.async_browser = None
         self.async_playwright = None
         self.db_lock = threading.Lock()  # Thread-safe database access
+        self.depot_cache = {}  # Cache depot data per city to avoid multiple API calls
+        self.depot_api_lock = None  # Will be initialized in async context
+        self.last_depot_api_call_time = None  # Track last API call time for rate limiting (wall-clock time)
         self._setup_browser()
     
     def _create_browser_context(self, user_agent: str = None) -> BrowserContext:
@@ -175,22 +187,54 @@ class DriveNowScraper:
         """
         Calculate pickup and return dates based on configuration.
         
-        Pickup date is always the NEXT day at 10 AM.
-        If running on Nov 17, pickup date will be Nov 18 at 10:00 AM.
+        Priority order:
+        1. Manual pickup date from PICKUP_DATE env var (format: YYYY-MM-DD) - used in manual workflow
+        2. CI/GitHub Actions auto mode: Pickup date is SAME day at 10 AM AEST
+          (If running on Nov 19 at 8am, pickup will be Nov 19 at 10:00 AM)
+        3. Manual testing: Pickup date is NEXT day at 10 AM AEST
+          (If running on Nov 18, pickup will be Nov 19 at 10:00 AM)
         
         Returns:
             Dictionary with 'pickup' and 'returns' dates
         """
-        # Get current date/time
-        now = datetime.now()
-        today = now.date()
+        import os
         
-        # Pickup date: ALWAYS next day at 10 AM
-        # If today is Nov 17, pickup will be Nov 18 at 10:00 AM
-        next_day = today + timedelta(days=1)
-        pickup_date = datetime.combine(next_day, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
+        # Check for manual pickup date (from manual workflow)
+        manual_pickup_date_str = os.getenv('PICKUP_DATE')
+        if manual_pickup_date_str:
+            try:
+                # Parse manual pickup date (YYYY-MM-DD format)
+                pickup_date_only = datetime.strptime(manual_pickup_date_str, '%Y-%m-%d').date()
+                pickup_date = datetime.combine(pickup_date_only, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
+                # Ensure timezone-aware
+                pickup_date = AEST.localize(pickup_date)
+                logger.info(f"[Manual Pickup Date] Using specified pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST")
+            except ValueError as e:
+                logger.error(f"Invalid PICKUP_DATE format '{manual_pickup_date_str}'. Expected YYYY-MM-DD. Using default logic.")
+                manual_pickup_date_str = None
         
-        logger.info(f"Today: {today.strftime('%Y-%m-%d')}, Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')}")
+        if not manual_pickup_date_str:
+            # Check if running in CI/GitHub Actions (auto mode)
+            is_ci = os.getenv('CI') == 'true' or os.getenv('GITHUB_ACTIONS') == 'true'
+            
+            # Get current date/time in AEST
+            now = get_aest_now()
+            today = now.date()
+            
+            # Pickup date logic:
+            # - CI/GitHub Actions: Same day at 10 AM AEST
+            # - Manual testing: Next day at 10 AM AEST
+            if is_ci:
+                # Running in CI: pickup date is same day at 10 AM
+                pickup_date = datetime.combine(today, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
+                pickup_date = AEST.localize(pickup_date)
+                logger.info(f"[CI Auto Mode] Today: {today.strftime('%Y-%m-%d')}, Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (same day)")
+            else:
+                # Manual testing: pickup date is next day at 10 AM
+                next_day = today + timedelta(days=1)
+                pickup_date = datetime.combine(next_day, datetime.min.time().replace(hour=10, minute=0, second=0, microsecond=0))
+                pickup_date = AEST.localize(pickup_date)
+                logger.info(f"[Manual Mode] Today: {today.strftime('%Y-%m-%d')}, Pickup date: {pickup_date.strftime('%Y-%m-%d %H:%M')} AEST (next day)")
         
         # Return dates: Based on return_days config (e.g., [1, 7] means +1 day and +7 days from pickup)
         return_days = self.config['date_config']['return_days']
@@ -924,14 +968,14 @@ class DriveNowScraper:
         Args:
             city: City configuration dict
             db: Database instance
-            collect_only: If True, only collect data and URLs without screenshots (Phase 1)
+            collect_only: If True, only collect data and URLs without screenshots
         """
         city_name = city['name']
         dates = self._calculate_dates()
         pickup_date = dates['pickup']
         return_dates = dates['returns']
         
-        scrape_datetime = datetime.now().isoformat()
+        scrape_datetime = get_aest_now().isoformat()
         
         all_vehicles = []
         
@@ -957,8 +1001,8 @@ class DriveNowScraper:
                 logger.info(f"Found {len(vehicles)} vehicles")
                 
                 if collect_only:
-                    # Phase 1: Just collect data and URLs, no screenshots
-                    logger.info(f"Phase 1: Collecting data for {len(vehicles)} vehicles...")
+                    # Just collect data and URLs, no screenshots
+                    logger.info(f"Collecting data for {len(vehicles)} vehicles...")
                     for idx, vehicle in enumerate(vehicles):
                         try:
                             vehicle_data = {
@@ -974,8 +1018,8 @@ class DriveNowScraper:
                                 'currency': 'AUD',
                                 'availability': 'Available',
                                 'vehicle_details': {},
-                                'detail_url': vehicle.get('detail_url'),  # Store URL for Phase 2
-                                'screenshot_path': None,  # Will be filled in Phase 2
+                                'detail_url': vehicle.get('detail_url'),
+                                'screenshot_path': None,
                             }
                             
                             vehicle_id = db.insert_vehicle(vehicle_data)
@@ -989,15 +1033,15 @@ class DriveNowScraper:
                             logger.error(f"Error saving vehicle {idx + 1}: {str(e)}")
                             continue
                     
-                    logger.info(f"Phase 1 complete: Collected {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
+                    logger.info(f"Collection complete: Collected {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
                 else:
-                    # Phase 2: Take screenshots (original method - kept for backward compatibility)
+                    # Screenshots are taken with results page screenshots
                     logger.info(f"Found {len(vehicles)} vehicles, scraping details...")
                     results_url = self._build_results_url(city, pickup_date, return_date)
                     
                     # Use parallel processing if enabled
                     if self.parallel_enabled:
-                        logger.info(f"Using parallel processing with {self.parallel_workers} workers...")
+                        logger.info(f"Using parallel processing with {self.workers} workers...")
                         self._scrape_vehicles_parallel(
                             vehicles, results_url, city_name, pickup_date, return_date,
                             scrape_date, scrape_timestamp, db, all_vehicles
@@ -1069,7 +1113,7 @@ class DriveNowScraper:
             )
         
         # Use specified workers or default to parallel_workers
-        workers = num_workers or self.parallel_workers
+        workers = num_workers or self.workers
         
         # Only create new contexts if we need more
         while len(self.async_contexts) < workers:
@@ -1215,24 +1259,6 @@ class DriveNowScraper:
         thread.start()
         thread.join()  # Wait for completion
     
-    def _generate_screenshot_path(self, vehicle: Dict) -> str:
-        """Generate screenshot file path for a vehicle."""
-        city_safe = vehicle['city'].replace(' ', '_').lower()
-        pickup_date = datetime.fromisoformat(vehicle['pickup_date'])
-        return_date = datetime.fromisoformat(vehicle['return_date'])
-        pickup_str = pickup_date.strftime("%Y%m%d_%H%M")
-        return_str = return_date.strftime("%Y%m%d_%H%M")
-        vehicle_safe = (vehicle.get('vehicle_name') or f"vehicle_{vehicle.get('id', 'unknown')}").replace(' ', '_').replace('/', '_').lower()[:50]
-        # Extract timestamp from scrape_datetime for filename
-        scrape_datetime_str = vehicle.get('scrape_datetime', datetime.now().isoformat())
-        try:
-            dt = datetime.fromisoformat(scrape_datetime_str.replace('Z', '+00:00'))
-            scrape_timestamp = dt.strftime("%Y%m%d_%H%M%S")
-        except:
-            scrape_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{city_safe}_{pickup_str}_{return_str}_{vehicle_safe}_{scrape_timestamp}.png"
-        return str(self.screenshot_dir / filename)
-    
     def _generate_results_screenshot_path(self, city: str, pickup_date: datetime, return_date: datetime, scrape_datetime: str) -> str:
         """Generate screenshot file path for a results page (city-date combination)."""
         city_safe = city.replace(' ', '_').lower()
@@ -1243,19 +1269,93 @@ class DriveNowScraper:
             dt = datetime.fromisoformat(scrape_datetime.replace('Z', '+00:00'))
             scrape_timestamp = dt.strftime("%Y%m%d_%H%M%S")
         except:
-            scrape_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            scrape_timestamp = get_aest_now().strftime("%Y%m%d_%H%M%S")
         filename = f"{city_safe}_{pickup_str}_{return_str}_results_{scrape_timestamp}.png"
         return str(self.screenshot_dir / filename)
     
-    def _compress_screenshot(self, screenshot_path: str, quality: int = 75, max_width: int = 1920) -> tuple:
+    def _add_watermark(self, img: Image.Image, screenshot_time: str, interval: int = 1000) -> Image.Image:
         """
-        Compress a screenshot to reduce file size.
+        Add watermark text to image at regular intervals.
+        
+        Args:
+            img: PIL Image object
+            screenshot_time: Timestamp string to display in watermark (ISO format)
+            interval: Vertical interval in pixels between watermarks (default: 1000px)
+            
+        Returns:
+            Image with watermarks added
+        """
+        try:
+            # Parse timestamp and format for display
+            try:
+                dt = datetime.fromisoformat(screenshot_time.replace('Z', '+00:00'))
+                # Convert to AEST if needed (should already be in AEST)
+                if dt.tzinfo is None:
+                    dt = AEST.localize(dt)
+                elif dt.tzinfo != AEST:
+                    dt = dt.astimezone(AEST)
+                # Format: "Screenshot Time: 2024-11-19 10:30:45 AEST"
+                watermark_text = f"Screenshot Time: {dt.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            except:
+                # Fallback to original string if parsing fails
+                watermark_text = f"Screenshot Time: {screenshot_time}"
+            
+            # Draw directly on image (in-place modification - more memory efficient)
+            draw = ImageDraw.Draw(img)
+            
+            # Use default font (more memory efficient, no file I/O)
+            font = ImageFont.load_default()
+            
+            # Get text dimensions
+            bbox = draw.textbbox((0, 0), watermark_text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # Colors: white text with black outline for visibility
+            text_color = (255, 255, 255)  # White
+            outline_color = (0, 0, 0)  # Black
+            
+            padding = 20
+            
+            # Calculate watermark positions (every interval pixels)
+            # Place at bottom center of each interval section to avoid overlapping with vehicle prices
+            # Limit number of watermarks to reduce memory usage
+            max_watermarks = 10  # Limit to prevent excessive memory usage
+            watermark_positions = []
+            y = interval - text_height - padding  # Start at bottom of first interval
+            watermark_count = 0
+            while y > padding and watermark_count < max_watermarks:
+                # Position: bottom center, horizontally centered
+                x = (img.width - text_width) // 2
+                watermark_positions.append((x, y))
+                y += interval  # Move to next interval section
+                watermark_count += 1
+            
+            # Add watermark at each position (optimized drawing - minimal outline)
+            for x, y in watermark_positions:
+                # Draw minimal outline (only 4 corners) for better visibility - very memory efficient
+                outline_offsets = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                for adj_x, adj_y in outline_offsets:
+                    draw.text((x + adj_x, y + adj_y), watermark_text, font=font, fill=outline_color)
+                
+                # Draw main text (white) on top
+                draw.text((x, y), watermark_text, font=font, fill=text_color)
+            
+            return img  # Return same image object (modified in place)
+        except Exception as e:
+            logger.warning(f"Error adding watermark: {str(e)}, returning original image")
+            return img
+    
+    def _compress_screenshot(self, screenshot_path: str, quality: int = 75, max_width: int = 1920, screenshot_time: str = None) -> tuple:
+        """
+        Compress a screenshot to reduce file size and add watermark.
         Converts to JPEG format for better compression (screenshots don't need transparency).
         
         Args:
             screenshot_path: Path to the screenshot file
             quality: JPEG quality (1-100, lower = smaller file but lower quality)
             max_width: Maximum width in pixels (resize if larger to reduce file size)
+            screenshot_time: Timestamp string for watermark (ISO format)
             
         Returns:
             Tuple of (success: bool, new_path: str) - new_path may be different if converted to JPEG
@@ -1289,6 +1389,12 @@ class DriveNowScraper:
                     img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
                     logger.debug(f"Resized image from {original_dimensions} to {max_width}x{new_height}")
                 
+                # Add watermark if screenshot_time is provided (optimized for memory efficiency)
+                if screenshot_time:
+                    # Use larger interval (2000px) and limit watermarks to reduce memory usage
+                    img = self._add_watermark(img, screenshot_time, interval=2000)
+                    logger.debug(f"Added watermark to screenshot with timestamp: {screenshot_time}")
+                
                 # Convert PNG path to JPEG path
                 jpeg_path = screenshot_path.replace('.png', '.jpg')
                 
@@ -1316,163 +1422,6 @@ class DriveNowScraper:
         except Exception as e:
             logger.error(f"Error compressing screenshot {screenshot_path}: {str(e)}", exc_info=True)
             return False, screenshot_path
-    
-    async def _capture_screenshot_batch_async(self, context: AsyncBrowserContext, 
-                                              detail_url: str, screenshot_path: str) -> bool:
-        """Capture screenshot for a single detail URL."""
-        page = None
-        try:
-            page = await context.new_page()
-            
-            # Add random delay before navigating to avoid detection
-            pre_navigation_delay = random.uniform(self.random_delay_min, self.random_delay_max)
-            await asyncio.sleep(pre_navigation_delay)
-            
-            # Navigate to detail page
-            await page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
-            
-            # Wait for DOM to be ready
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=10000)
-            except:
-                logger.debug(f"DOM load timeout for {detail_url}, continuing...")
-            
-            # Wait for network to be mostly idle (important for dynamic content)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=20000)
-                logger.debug(f"Network idle reached for {detail_url}")
-            except:
-                logger.debug(f"Network idle timeout for {detail_url} (continuing anyway)")
-            
-            # Additional wait for initial content to load
-            await asyncio.sleep(3)
-            
-            # Additional wait for dynamic content to render
-            await asyncio.sleep(2)
-            
-            # Wait for page content to appear - check for common vehicle detail page elements
-            content_selectors = [
-                "body",
-                "[class*='vehicle']",
-                "[class*='detail']",
-                "[class*='booking']",
-                "h1",
-                "h2",
-            ]
-            
-            content_found = False
-            for selector in content_selectors:
-                try:
-                    await page.wait_for_selector(selector, timeout=5000, state="visible")
-                    elements = await page.query_selector_all(selector)
-                    if elements and len(elements) > 0:
-                        content_found = True
-                        break
-                except:
-                    continue
-            
-            if not content_found:
-                logger.warning(f"No content found immediately for {detail_url}, waiting more...")
-                await asyncio.sleep(3)
-            
-            # Additional wait for JavaScript to fully render
-            await asyncio.sleep(2)
-            
-            # Verify page has substantial content
-            try:
-                body_text = await page.evaluate("() => document.body.innerText")
-                if len(body_text) < 100:
-                    logger.warning(f"Page content seems minimal ({len(body_text)} chars) for {detail_url}, waiting more...")
-                    await asyncio.sleep(3)
-            except:
-                pass
-            
-            # Wait for network idle one more time to ensure all resources are loaded
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except:
-                pass
-            
-            # Additional wait for final rendering
-            await asyncio.sleep(2)
-            
-            # Scroll to top to ensure we start from the beginning
-            await page.evaluate("window.scrollTo(0, 0)")
-            await asyncio.sleep(1)
-            
-            # Take screenshot with full page
-            await page.screenshot(path=screenshot_path, full_page=True, timeout=30000)
-            logger.debug(f"Screenshot captured for {detail_url}")
-            return True
-        except Exception as e:
-            logger.error(f"Error capturing screenshot for {detail_url}: {str(e)}")
-            return False
-        finally:
-            if page:
-                await page.close()
-    
-    async def capture_all_screenshots_async(self, db):
-        """Phase 2: Capture screenshots for all vehicles in parallel."""
-        # Get all vehicles without screenshots
-        vehicles = db.get_vehicles_without_screenshots()
-        
-        if not vehicles:
-            logger.info("No vehicles need screenshots. Phase 2 skipped.")
-            return
-        
-        logger.info(f"Phase 2: Capturing screenshots for {len(vehicles)} vehicles...")
-        
-        # Set up async browser
-        await self._setup_async_browser()
-        
-        # Process in batches
-        total_processed = 0
-        for batch_start in range(0, len(vehicles), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(vehicles))
-            batch = vehicles[batch_start:batch_end]
-            
-            logger.info(f"Processing screenshot batch {batch_start//self.batch_size + 1}: vehicles {batch_start + 1}-{batch_end} of {len(vehicles)}")
-            
-            tasks = []
-            for vehicle in batch:
-                if vehicle.get('detail_url'):
-                    screenshot_path = self._generate_screenshot_path(vehicle)
-                    # Assign context round-robin
-                    context = self.async_contexts[vehicle['id'] % len(self.async_contexts)]
-                    task = self._capture_screenshot_batch_async(
-                        context, vehicle['detail_url'], screenshot_path
-                    )
-                    tasks.append((task, vehicle, screenshot_path))
-                else:
-                    logger.warning(f"Vehicle {vehicle.get('id')} has no detail_url, skipping screenshot")
-            
-            # Run all screenshot tasks in parallel
-            results = await asyncio.gather(*[t[0] for t in tasks], return_exceptions=True)
-            
-            # Update database with screenshot paths
-            for (task, vehicle, screenshot_path), result in zip(tasks, results):
-                try:
-                    if isinstance(result, Exception):
-                        logger.error(f"Error in screenshot task for vehicle {vehicle.get('id')}: {str(result)}")
-                        continue
-                    
-                    if result:
-                        db.update_vehicle_screenshot(vehicle['id'], screenshot_path)
-                        total_processed += 1
-                        if total_processed % 10 == 0:
-                            logger.info(f"Captured {total_processed}/{len(vehicles)} screenshots...")
-                    else:
-                        logger.warning(f"Failed to capture screenshot for vehicle {vehicle.get('id')}")
-                except Exception as e:
-                    logger.error(f"Error updating screenshot for vehicle {vehicle.get('id')}: {str(e)}")
-            
-            # Longer delay between batches to avoid detection
-            if batch_end < len(vehicles):
-                batch_delay = self.delay_between_batches + random.uniform(self.random_delay_min, self.random_delay_max)
-                logger.info(f"Waiting {batch_delay:.1f} seconds before next screenshot batch to avoid detection...")
-                await asyncio.sleep(batch_delay)
-        
-        logger.info(f"Phase 2 complete: Captured {total_processed}/{len(vehicles)} screenshots")
     
     def _generate_all_combinations(self) -> List[Dict]:
         """
@@ -1502,7 +1451,7 @@ class DriveNowScraper:
                                                  scrape_datetime: str, db) -> List[Dict]:
         """
         Worker function to collect vehicle data for a single (city, date) combination.
-        Used for Phase 1 parallel processing.
+        Used for parallel processing.
         """
         page = None
         vehicles_collected = []
@@ -1578,9 +1527,11 @@ class DriveNowScraper:
             except:
                 pass
             
-            # Extract vehicle listings
+            # Extract vehicle listings first
             logger.debug(f"[Worker] Extracting vehicle listings for {city_name}...")
             vehicles = await self._get_vehicle_listings_async(page)
+            
+            # Skip depot extraction from "View depots" for now - we only save depot_code and supplier_code
             
             if not vehicles:
                 logger.warning(f"[Worker] No vehicles found for {city_name} ({pickup_date.date()} to {return_date.date()})")
@@ -1606,12 +1557,12 @@ class DriveNowScraper:
                     await page.evaluate("window.scrollTo(0, 0)")
                     
                     # Generate screenshot path for this city-date combination
-                    screenshot_path = self._generate_results_screenshot_path(
+                    original_screenshot_path = self._generate_results_screenshot_path(
                         city_name, pickup_date, return_date, scrape_datetime
                     )
                     
                     # Take full page screenshot (page is already fully loaded)
-                    await page.screenshot(path=screenshot_path, full_page=True, timeout=30000)
+                    await page.screenshot(path=original_screenshot_path, full_page=True, timeout=30000)
                     
                     # Compress and upload to get R2 URL before saving vehicles
                     # This ensures screenshot_path in database is the R2 URL, not local path
@@ -1620,9 +1571,12 @@ class DriveNowScraper:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         def compress_and_upload():
                             try:
-                                # Compress screenshot first
-                                success, compressed_path = self._compress_screenshot(screenshot_path)
-                                final_path = compressed_path if success else screenshot_path
+                                # Compress screenshot first (with watermark)
+                                success, compressed_path = self._compress_screenshot(
+                                    original_screenshot_path, 
+                                    screenshot_time=scrape_datetime
+                                )
+                                final_path = compressed_path if success else original_screenshot_path
                                 
                                 # Upload to cloud storage if enabled
                                 if self.use_cloud_storage and self.cloud_storage:
@@ -1648,27 +1602,29 @@ class DriveNowScraper:
                                     except Exception as e:
                                         logger.warning(f"[Worker] Failed to upload to cloud storage: {str(e)}")
                                         return final_path
-                                elif success and compressed_path != screenshot_path:
+                                elif success and compressed_path != original_screenshot_path:
                                     # No cloud storage, but compression happened - use compressed path
                                     return compressed_path
                                 else:
-                                    return screenshot_path
+                                    return original_screenshot_path
                             except Exception as e:
                                 logger.warning(f"[Worker] Error compressing/uploading screenshot for {city_name}: {str(e)}")
-                                return screenshot_path
+                                return original_screenshot_path
                         
-                        # Wait for compression/upload to complete (with timeout)
+                        # Wait for compression/upload to complete (with increased timeout for large screenshots)
                         future = executor.submit(compress_and_upload)
                         try:
-                            screenshot_path = future.result(timeout=60)  # 60 second timeout
+                            screenshot_path = future.result(timeout=120)  # Increased to 120 seconds for large screenshots
                             if self.use_cloud_storage and screenshot_path.startswith('http'):
                                 logger.info(f"[Worker] Uploaded screenshot to R2: {screenshot_path}")
                         except concurrent.futures.TimeoutError:
-                            logger.error(f"[Worker] Timeout compressing/uploading screenshot for {city_name}")
-                            # Keep original path if timeout
+                            logger.error(f"[Worker] Timeout compressing/uploading screenshot for {city_name} (120s exceeded)")
+                            # Keep original path if timeout - continue with scraping
+                            screenshot_path = original_screenshot_path  # Keep original path
                         except Exception as e:
                             logger.error(f"[Worker] Error in compression/upload thread: {str(e)}")
                             # Keep original path if error
+                            screenshot_path = original_screenshot_path
                     
                     logger.info(f"[Worker] Captured results page screenshot for {city_name} ({pickup_date.date()} to {return_date.date()})")
                 except Exception as e:
@@ -1678,6 +1634,10 @@ class DriveNowScraper:
             # Save vehicles to database (thread-safe) - all share the same screenshot path
             for vehicle in vehicles:
                 try:
+                    # Extract depot_code and supplier_code directly from vehicle data
+                    depot_code = self._extract_depot_code_from_url(vehicle.get('detail_url', ''))
+                    supplier_code = self._extract_supplier_code_from_logo(vehicle.get('logo_url', ''))
+                    
                     vehicle_data = {
                         'scrape_datetime': scrape_datetime,
                         'city': city_name,
@@ -1696,6 +1656,12 @@ class DriveNowScraper:
                         'currency': 'AUD',
                         'detail_url': vehicle.get('detail_url'),
                         'screenshot_path': screenshot_path,  # All vehicles from same combination share screenshot
+                        # Depot codes (for later lookup)
+                        'depot_code': depot_code,
+                        'supplier_code': supplier_code,
+                        # City location
+                        'city_latitude': city.get('latitude'),
+                        'city_longitude': city.get('longitude'),
                     }
                     
                     with self.db_lock:
@@ -1742,6 +1708,205 @@ class DriveNowScraper:
         )
         
         return url
+    
+    async def _fetch_depots_async(self, page: AsyncPage, city: Dict, pickup_date: datetime, return_date: datetime) -> Dict[str, Dict]:
+        """
+        Fetch depot information from API for a given city.
+        Uses caching per city to avoid multiple API calls (depot data doesn't change by date).
+        Uses Playwright's request API to avoid adding aiohttp dependency.
+        
+        Returns:
+            Dictionary mapping (supplier_code, depot_code) -> depot_info
+        """
+        city_name = city['name']
+        
+        # Check cache first (depot data is the same for all dates in a city)
+        if city_name in self.depot_cache:
+            logger.debug(f"[Depot API] Using cached depot data for {city_name}")
+            return self.depot_cache[city_name]
+        
+        # Initialize lock if needed (must be done in async context)
+        if self.depot_api_lock is None:
+            self.depot_api_lock = asyncio.Lock()
+        
+        # Use lock to prevent concurrent API calls (rate limiting protection)
+        async with self.depot_api_lock:
+            # Double-check cache after acquiring lock (another task might have fetched it)
+            if city_name in self.depot_cache:
+                logger.debug(f"[Depot API] Using cached depot data for {city_name} (after lock)")
+                return self.depot_cache[city_name]
+            
+            # Global rate limiting: ensure minimum delay between ANY depot API calls
+            import time as time_module
+            current_time = time_module.time()
+            if self.last_depot_api_call_time is not None:
+                time_since_last_call = current_time - self.last_depot_api_call_time
+                min_delay_between_calls = 8.0  # Minimum 8 seconds between any depot API calls (increased)
+                if time_since_last_call < min_delay_between_calls:
+                    wait_time = min_delay_between_calls - time_since_last_call + random.uniform(2.0, 4.0)
+                    logger.debug(f"[Depot API] Waiting {wait_time:.1f}s before API call (rate limiting protection, {time_since_last_call:.1f}s since last call)")
+                    await asyncio.sleep(wait_time)
+            
+            # Additional delay before API call to avoid rate limiting
+            await asyncio.sleep(random.uniform(3.0, 5.0))  # Increased from 2-4s to 3-5s
+            
+            try:
+                lat = city['latitude']
+                lng = city['longitude']
+                radius = city.get('radius', 3)
+                
+                # Build depot API URL
+                depot_api_url = (
+                    f"https://api.vroomvroomvroom.com/json/v2.1/pickup-return-depots"
+                    f"?alias=drivenow"
+                    f"&driver-country-code=AU"
+                    f"&pickup-coordinate={lat},{lng}"
+                    f"&return-coordinate={lat},{lng}"
+                    f"&pickup-location-types[]=standard"
+                    f"&pickup-location-types[]=off-airport"
+                    f"&pickup-location-types[]=ferry"
+                    f"&pickup-location-types[]=train-station"
+                    f"&return-location-types[]=standard"
+                    f"&return-location-types[]=off-airport"
+                    f"&return-location-types[]=ferry"
+                    f"&return-location-types[]=train-station"
+                    f"&radius={radius}"
+                    f"&sort=nearest"
+                    f"&matrix-type=standard"
+                )
+                
+                # Retry logic with exponential backoff
+                max_retries = 3
+                retry_delay = 2.0
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Use Playwright's request API
+                        response = await page.request.get(depot_api_url, timeout=15000)
+                        
+                        if response.status == 200:
+                            depot_data = await response.json()
+                            
+                            # Build lookup dictionary: (supplier_code, depot_code) -> depot_info
+                            depot_lookup = {}
+                            for depot_pair in depot_data:
+                                pickup = depot_pair.get('pickup', {})
+                                supplier_code = pickup.get('supplier', {}).get('code', '').upper()
+                                depot_code = pickup.get('code', '')
+                                
+                                if supplier_code and depot_code:
+                                    key = (supplier_code, depot_code)
+                                    depot_lookup[key] = {
+                                        'name': pickup.get('name', ''),
+                                        'address': pickup.get('address', ''),
+                                        'city': pickup.get('city', ''),
+                                        'postcode': pickup.get('postcode', ''),
+                                        'phone': pickup.get('phone', ''),
+                                    }
+                            
+                            # Cache the result
+                            self.depot_cache[city_name] = depot_lookup
+                            
+                            # Update last API call time (use wall-clock time)
+                            import time as time_module
+                            self.last_depot_api_call_time = time_module.time()
+                            
+                            logger.info(f"[Depot API] Fetched and cached {len(depot_lookup)} depots for {city_name}")
+                            return depot_lookup
+                        elif response.status == 418:
+                            # Rate limited - wait much longer before retry (exponential backoff with longer base delay)
+                            import time as time_module
+                            if attempt < max_retries - 1:
+                                wait_time = retry_delay * (2 ** attempt) + random.uniform(10.0, 15.0)  # Increased to 10-15s
+                                logger.warning(f"[Depot API] Rate limited (HTTP 418) for {city_name}, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})")
+                                await asyncio.sleep(wait_time)
+                                # Update last call time even on failure to space out retries
+                                self.last_depot_api_call_time = time_module.time()
+                                continue
+                            else:
+                                logger.error(f"[Depot API] Rate limited (HTTP 418) for {city_name} after {max_retries} attempts - skipping depot data for this city")
+                                # Update last call time to prevent immediate retries from other tasks
+                                self.last_depot_api_call_time = time_module.time()
+                                # Wait significantly longer before returning to prevent other tasks from immediately hitting the API
+                                await asyncio.sleep(random.uniform(20.0, 30.0))  # Increased to 20-30s
+                                return {}
+                        else:
+                            logger.warning(f"[Depot API] Failed to fetch depots for {city_name}: HTTP {response.status}")
+                            return {}
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (2 ** attempt)
+                            logger.warning(f"[Depot API] Error fetching depots for {city_name} (attempt {attempt + 1}/{max_retries}): {str(e)}, retrying in {wait_time:.1f}s")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"[Depot API] Error fetching depots for {city_name} after {max_retries} attempts: {str(e)}")
+                            return {}
+                
+                return {}
+            except Exception as e:
+                logger.warning(f"[Depot API] Error fetching depots for {city_name}: {str(e)}")
+                return {}
+    
+    # Removed: _extract_depots_from_page_async and _parse_depot_info_from_text
+    # These methods are not used - we only save depot_code and supplier_code for now
+    
+    def _extract_depot_code_from_url(self, detail_url: str) -> Optional[str]:
+        """
+        Extract depot code from detail URL.
+        
+        Example: /booking/.../SYDC63/SYDC63/... -> SYDC63
+        """
+        if not detail_url:
+            return None
+        
+        try:
+            # Pattern: /booking/date/time/date/time/DEPOT_CODE/DEPOT_CODE/...
+            match = re.search(r'/booking/[^/]+/[^/]+/[^/]+/[^/]+/([^/]+)/', detail_url)
+            if match:
+                return match.group(1)
+        except:
+            pass
+        
+        return None
+    
+    def _extract_supplier_code_from_logo(self, logo_url: str) -> Optional[str]:
+        """
+        Extract supplier code from logo URL.
+        
+        Example: logo-en -> EN, logo-av -> AV
+        """
+        if not logo_url:
+            return None
+        
+        try:
+            # Pattern: logo-XX or logo_XX
+            match = re.search(r'logo[-_]([a-z0-9]+)', logo_url.lower())
+            if match:
+                supplier_code = match.group(1).upper()
+                # Handle special cases
+                if supplier_code == 'EN':
+                    return 'EN'
+                elif supplier_code == 'AV':
+                    return 'AV'
+                elif supplier_code == 'BG':
+                    return 'BG'
+                elif supplier_code == 'EC':
+                    return 'EC'
+                elif supplier_code == 'HT':
+                    return 'HT'
+                elif supplier_code == 'HZ':
+                    return 'HZ'
+                elif supplier_code == 'NB':
+                    return 'NB'
+                elif supplier_code == 'SX':
+                    return 'SX'
+                else:
+                    return supplier_code
+        except:
+            pass
+        
+        return None
     
     def _parse_vehicle_details(self, vehicle_text: str) -> Dict[str, any]:
         """
@@ -2560,22 +2725,40 @@ class DriveNowScraper:
     
     async def _collect_all_vehicles_parallel_async(self, db):
         """Collect all vehicle data and capture results page screenshots in parallel using flat parallelization."""
+        import time
+        
+        collection_start_time = time.time()
+        
         # Generate all (city, date) combinations
         combinations = self._generate_all_combinations()
         logger.info(f"Processing {len(combinations)} (city, date) combinations in parallel (with screenshots)...")
         
-        # Set up async browser with Phase 1 workers
-        await self._setup_async_browser(num_workers=self.phase1_workers)
+        # Set up async browser with parallel workers
+        await self._setup_async_browser(num_workers=self.workers)
         
-        scrape_datetime = datetime.now().isoformat()
+        # Pre-fetch depot data for all unique cities sequentially to avoid rate limiting
+        # This ensures depot data is cached before parallel processing starts
+        unique_cities = {}
+        for combo in combinations:
+            city_name = combo['city']['name']
+            if city_name not in unique_cities:
+                unique_cities[city_name] = combo['city']
+        
+        # Skip depot API pre-fetching for now - we'll just save depot_code and supplier_code
+        # logger.info(f"Pre-fetching depot data for {len(unique_cities)} cities sequentially...")
+        # Depot codes will be extracted directly from vehicle URLs/logos during scraping
+        
+        logger.info(f"Starting parallel vehicle collection (depot codes will be saved for later lookup)...")
+        
+        scrape_datetime = get_aest_now().isoformat()
         
         # Process in batches
         total_collected = 0
-        for batch_start in range(0, len(combinations), self.phase1_workers):
-            batch_end = min(batch_start + self.phase1_workers, len(combinations))
+        for batch_start in range(0, len(combinations), self.workers):
+            batch_end = min(batch_start + self.workers, len(combinations))
             batch = combinations[batch_start:batch_end]
             
-            logger.info(f"Processing batch {batch_start//self.phase1_workers + 1}: combinations {batch_start + 1}-{batch_end} of {len(combinations)}")
+            logger.info(f"Processing batch {batch_start//self.workers + 1}: combinations {batch_start + 1}-{batch_end} of {len(combinations)}")
             
             # Create tasks for all combinations in batch
             tasks = []
@@ -2623,13 +2806,24 @@ class DriveNowScraper:
                 logger.info(f"Waiting {batch_delay:.1f} seconds before next batch to avoid detection...")
                 await asyncio.sleep(batch_delay)
         
+        # Calculate and log collection duration
+        collection_end_time = time.time()
+        collection_duration = collection_end_time - collection_start_time
+        minutes = int(collection_duration // 60)
+        seconds = int(collection_duration % 60)
+        
         logger.info(f"Collection complete: Collected {total_collected} vehicles total")
+        logger.info(f"⏱️  Data collection time: {minutes}m {seconds}s ({collection_duration:.1f} seconds)")
     
     def scrape_all(self, db) -> Dict[str, List[Dict]]:
         """
         Scrape all configured cities (single phase).
         Collects vehicle data and captures results page screenshots in parallel.
         """
+        import time
+        
+        start_time = time.time()
+        
         logger.info("="*60)
         logger.info("Collecting vehicle data and capturing results page screenshots...")
         logger.info("="*60)
@@ -2658,6 +2852,12 @@ class DriveNowScraper:
         collection_thread = threading.Thread(target=run_collection, daemon=False)
         collection_thread.start()
         collection_thread.join()
+        
+        # Calculate and log collection duration
+        end_time = time.time()
+        duration = end_time - start_time
+        minutes = int(duration // 60)
+        seconds = int(duration % 60)
         
         # Close async browser after collection
         try:
@@ -2689,6 +2889,7 @@ class DriveNowScraper:
         
         logger.info("="*60)
         logger.info("Collection complete!")
+        logger.info(f"⏱️  Total scraping time: {minutes}m {seconds}s ({duration:.1f} seconds)")
         logger.info("="*60)
         
         # Return summary (vehicles are already in database)
