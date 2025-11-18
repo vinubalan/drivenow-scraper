@@ -1,13 +1,14 @@
 name: Daily Scraper (Auto)
 
 on:
-  schedule:
-    # Run at 8:00 AM AEST every day
-    # AEST is UTC+10, so 8:00 AM AEST = 22:00 UTC (previous day)
-    # AEDT is UTC+11, so 8:00 AM AEDT = 21:00 UTC (previous day)
-    # Using 22:00 UTC to cover both AEST and AEDT (closer to AEST)
-    # Note: GitHub Actions uses UTC timezone
-    - cron: '0 22 * * *'  # 8:00 AM AEST (22:00 UTC previous day)
+  workflow_dispatch:
+  # schedule:
+  #   # Run at 8:00 AM AEST every day
+  #   # AEST is UTC+10, so 8:00 AM AEST = 22:00 UTC (previous day)
+  #   # AEDT is UTC+11, so 8:00 AM AEDT = 21:00 UTC (previous day)
+  #   # Using 22:00 UTC to cover both AEST and AEDT (closer to AEST)
+  #   # Note: GitHub Actions uses UTC timezone
+  #   - cron: '0 22 * * *'  # 8:00 AM AEST (22:00 UTC previous day)
 
 jobs:
   scrape:
