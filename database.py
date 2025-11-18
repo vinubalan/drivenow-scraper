@@ -72,15 +72,15 @@ class Database:
         
         try:
             # Vehicles table
-            # Use TIMESTAMPTZ (TIMESTAMP WITH TIME ZONE) to preserve timezone information
-            # All timestamps are stored in AEST timezone
+            # scrape_datetime: TIMESTAMPTZ to preserve AEST timezone
+            # pickup_date and return_date: TIMESTAMP (without timezone) - these represent AEST times but stored without timezone conversion
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vehicles (
                     id SERIAL PRIMARY KEY,
                     scrape_datetime TIMESTAMPTZ NOT NULL,
                     city VARCHAR(255) NOT NULL,
-                    pickup_date TIMESTAMPTZ NOT NULL,
-                    return_date TIMESTAMPTZ NOT NULL,
+                    pickup_date TIMESTAMP NOT NULL,
+                    return_date TIMESTAMP NOT NULL,
                     vehicle_name TEXT,
                     vehicle_type TEXT,
                     seats TEXT,
@@ -114,30 +114,46 @@ class Database:
                 # Ignore errors (column might not exist or other issues)
                 pass
             
-            # Migrate existing TIMESTAMP columns to TIMESTAMPTZ if they exist
-            # This ensures timezone information is preserved
-            # Assumes existing TIMESTAMP data is stored in UTC (common for PostgreSQL)
-            timestamp_columns = ['scrape_datetime', 'pickup_date', 'return_date']
-            for column_name in timestamp_columns:
+            # Migrate scrape_datetime to TIMESTAMPTZ (if needed)
+            # pickup_date and return_date should remain as TIMESTAMP (without timezone)
+            try:
+                cursor.execute("""
+                    SELECT data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name='vehicles' AND column_name='scrape_datetime'
+                """)
+                result = cursor.fetchone()
+                if result and result[0] == 'timestamp without time zone':
+                    # Convert scrape_datetime to TIMESTAMPTZ
+                    # Treat existing timestamp as UTC (preserves the actual moment in time)
+                    cursor.execute("""
+                        ALTER TABLE vehicles 
+                        ALTER COLUMN scrape_datetime TYPE TIMESTAMPTZ 
+                        USING scrape_datetime AT TIME ZONE 'UTC'
+                    """)
+            except Exception as e:
+                # Ignore errors (column might not exist or already converted)
+                pass
+            
+            # Ensure pickup_date and return_date are TIMESTAMP (without timezone)
+            # If they're TIMESTAMPTZ, convert them to TIMESTAMP (extract the local time)
+            for column_name in ['pickup_date', 'return_date']:
                 try:
-                    # Check current data type
                     cursor.execute("""
                         SELECT data_type 
                         FROM information_schema.columns 
                         WHERE table_name='vehicles' AND column_name=%s
                     """, (column_name,))
                     result = cursor.fetchone()
-                    if result and result[0] == 'timestamp without time zone':
-                        # Convert to TIMESTAMPTZ
-                        # Treat existing timestamp as UTC (preserves the actual moment in time)
-                        # TIMESTAMPTZ stores internally as UTC, so this conversion preserves the moment
+                    if result and result[0] == 'timestamp with time zone':
+                        # Convert TIMESTAMPTZ to TIMESTAMP (extract local time in AEST)
                         cursor.execute(f"""
                             ALTER TABLE vehicles 
-                            ALTER COLUMN {column_name} TYPE TIMESTAMPTZ 
-                            USING {column_name} AT TIME ZONE 'UTC'
+                            ALTER COLUMN {column_name} TYPE TIMESTAMP 
+                            USING {column_name} AT TIME ZONE 'Australia/Sydney'
                         """)
                 except Exception as e:
-                    # Ignore errors (column might not exist or already converted)
+                    # Ignore errors (column might not exist or already correct)
                     pass
             
             # Create indexes for faster queries
@@ -275,24 +291,31 @@ class Database:
             else:
                 scrape_dt = get_aest_now()
             
-            # pickup_date and return_date should also be AEST-aware
+            # pickup_date and return_date: Parse as AEST, then convert to naive datetime (no timezone)
+            # These represent AEST times but are stored as TIMESTAMP (without timezone) in the database
             pickup_dt_str = vehicle_data.get('pickup_date')
             if pickup_dt_str:
                 pickup_dt = datetime.fromisoformat(pickup_dt_str.replace('Z', '+00:00'))
+                # Convert to AEST if needed
                 if pickup_dt.tzinfo is None:
                     pickup_dt = AEST.localize(pickup_dt)
                 elif pickup_dt.tzinfo != AEST:
                     pickup_dt = pickup_dt.astimezone(AEST)
+                # Convert to naive datetime (remove timezone, keeping the AEST time values)
+                pickup_dt = pickup_dt.replace(tzinfo=None)
             else:
                 raise ValueError("pickup_date is required")
             
             return_dt_str = vehicle_data.get('return_date')
             if return_dt_str:
                 return_dt = datetime.fromisoformat(return_dt_str.replace('Z', '+00:00'))
+                # Convert to AEST if needed
                 if return_dt.tzinfo is None:
                     return_dt = AEST.localize(return_dt)
                 elif return_dt.tzinfo != AEST:
                     return_dt = return_dt.astimezone(AEST)
+                # Convert to naive datetime (remove timezone, keeping the AEST time values)
+                return_dt = return_dt.replace(tzinfo=None)
             else:
                 raise ValueError("return_date is required")
             

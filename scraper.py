@@ -2783,7 +2783,10 @@ class DriveNowScraper:
         # Set up async browser with parallel workers (auto-configured based on return_days)
         await self._setup_async_browser(num_workers=self.workers)
         
+        # Capture current AEST time for scrape_datetime (always captures present time)
         scrape_datetime = get_aest_now().isoformat()
+        scrape_dt_display = get_aest_now()
+        console.print(f"[dim]Scrape datetime: {scrape_dt_display.strftime('%Y-%m-%d %H:%M:%S %Z')} (AEST)[/dim]")
         
         # Process city-wise with progress bar
         total_collected = 0

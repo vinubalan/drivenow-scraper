@@ -199,10 +199,10 @@ The scraper creates a single `vehicles` table automatically:
 ### `vehicles` table
 
 - `id`: Primary key
-- `scrape_datetime`: Timestamp when scraping occurred (AEST)
+- `scrape_datetime`: Timestamp when scraping occurred (TIMESTAMPTZ, stored in AEST)
 - `city`: City name
-- `pickup_date`: Pickup date and time (AEST)
-- `return_date`: Return date and time (AEST)
+- `pickup_date`: Pickup date and time (TIMESTAMP without timezone, represents AEST time)
+- `return_date`: Return date and time (TIMESTAMP without timezone, represents AEST time)
 - `vehicle_name`: Name of the vehicle
 - `vehicle_type`: Type/category of vehicle
 - `seats`: Number of seats
@@ -382,7 +382,9 @@ drivenow-scraper/
 - **Respect Website Terms**: Ensure your scraping activities comply with DriveNow's terms of service
 - **Rate Limiting**: The scraper includes delays between requests to be respectful
 - **Data Accuracy**: Vehicle data depends on the website's current structure and may need periodic updates
-- **Timezone**: All timestamps are stored in AEST (Australian Eastern Standard Time)
+- **Timezone**: 
+  - `scrape_datetime` is stored as TIMESTAMPTZ with AEST timezone
+  - `pickup_date` and `return_date` are stored as TIMESTAMP (without timezone) and represent AEST times (e.g., `2025-11-19 10:00:00`)
 - **Screenshots**: Full-page screenshots are compressed (JPEG) and include watermarks with screenshot time
 - **Database Schema**: Only the `vehicles` table is used. Screenshots are stored via the `screenshot_path` column.
 
