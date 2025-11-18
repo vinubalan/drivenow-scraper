@@ -1561,14 +1561,8 @@ class DriveNowScraper:
             
             logger.debug(f"[Worker] Found {len(vehicles)} vehicles for {city_name} ({pickup_date.date()} to {return_date.date()})")
             
-            # Delete existing records for this combination to prevent duplicates
-            with self.db_lock:
-                deleted_count = db.delete_vehicles_for_combination(
-                    scrape_datetime, city_name, 
-                    pickup_date.isoformat(), return_date.isoformat()
-                )
-                if deleted_count > 0:
-                    logger.debug(f"[Worker] Deleted {deleted_count} existing records for {city_name} ({pickup_date.date()} to {return_date.date()})")
+            # Note: Upfront deletion already handled all records for this pickup_date
+            # No need to delete per combination anymore - this is faster!
             
             # Take screenshot of results page (before saving vehicles)
             # Page is already fully loaded after vehicle extraction, so no extra waits needed
@@ -2758,7 +2752,16 @@ class DriveNowScraper:
         combinations = self._generate_all_combinations()
         cities = self.config['cities']
         dates = self._calculate_dates()
+        pickup_date = dates['pickup']
         return_dates = dates['returns']
+        
+        # Upfront deletion: Delete all records for this pickup_date before scraping starts
+        # This is faster than deleting per combination (single bulk delete vs multiple deletes)
+        pickup_date_str = pickup_date.isoformat()
+        with self.db_lock:
+            deleted_count = db.delete_vehicles_for_pickup_date(pickup_date_str)
+            if deleted_count > 0:
+                console.print(f"[dim]Deleted {deleted_count} existing records for pickup_date {pickup_date.date()}[/dim]")
         
         # Group combinations by city for city-wise processing
         city_groups = {}
@@ -2798,7 +2801,14 @@ class DriveNowScraper:
                 if not city_combinations:
                     continue
                 
+                # Track start time for this city
+                city_start_time = time.time()
+                
                 console.print(f"[bold yellow]Processing {city_name} ({len(city_combinations)} date combinations)...[/bold yellow]")
+                
+                # Track vehicles per return_date for this city
+                city_vehicles_by_duration = {}
+                city_total_vehicles = 0
                 
                 # Process all dates for this city in parallel (using workers = number of return_days)
                 # Split city combinations into batches if needed (shouldn't be needed since workers = return_days count)
@@ -2837,9 +2847,21 @@ class DriveNowScraper:
                             if result:
                                 count = len(result)
                                 total_collected += count
+                                city_total_vehicles += count
+                                
                                 pickup = combo['pickup_date'].date()
                                 return_date = combo['return_date'].date()
-                                progress.update(main_task, advance=1, description=f"[cyan]Scraping vehicles... [green]{city_name} {pickup}→{return_date}: {count} vehicles[/green]")
+                                
+                                # Calculate duration in days
+                                duration_days = (return_date - pickup).days
+                                duration_key = f"+{duration_days} day{'s' if duration_days != 1 else ''}"
+                                
+                                # Track vehicles per duration
+                                if duration_key not in city_vehicles_by_duration:
+                                    city_vehicles_by_duration[duration_key] = 0
+                                city_vehicles_by_duration[duration_key] += count
+                                
+                                progress.update(main_task, advance=1, description=f"[cyan]Scraping vehicles... [green]{pickup}→{return_date}: {count} vehicles[/green]")
                                 
                                 # Add delay after each successful combination to avoid detection
                                 post_combo_delay = random.uniform(self.random_delay_min, self.random_delay_max)
@@ -2850,10 +2872,33 @@ class DriveNowScraper:
                             logger.error(f"Error processing result: {str(e)}")
                             progress.update(main_task, advance=1)
                 
+                # Calculate city completion time
+                city_end_time = time.time()
+                city_duration = city_end_time - city_start_time
+                city_minutes = int(city_duration // 60)
+                city_seconds = int(city_duration % 60)
+                
+                # Build duration summary string
+                duration_parts = []
+                for duration_key in sorted(city_vehicles_by_duration.keys(), key=lambda x: int(x.split()[0].replace('+', ''))):
+                    count = city_vehicles_by_duration[duration_key]
+                    duration_parts.append(f"{duration_key}: {count}")
+                
+                duration_summary = ", ".join(duration_parts) if duration_parts else "0 vehicles"
+                
+                # Display city completion summary
+                if city_minutes > 0:
+                    time_str = f"{city_minutes}m {city_seconds}s"
+                else:
+                    time_str = f"{city_seconds}s"
+                
+                console.print(f"[bold green]✓ Completed {city_name} in {time_str}[/bold green]")
+                console.print(f"[dim]  Vehicles: {duration_summary} (total: {city_total_vehicles})[/dim]")
+                
                 # Longer delay between cities to avoid detection
                 if city_idx < len(cities) - 1:
                     city_delay = self.delay_between_cities + random.uniform(self.random_delay_min, self.random_delay_max)
-                    console.print(f"[dim]Completed {city_name}. Waiting {city_delay:.1f}s before next city...[/dim]")
+                    console.print(f"[dim]Waiting {city_delay:.1f}s before next city...[/dim]")
                     await asyncio.sleep(city_delay)
         
         # Calculate and log collection duration

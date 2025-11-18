@@ -389,11 +389,47 @@ class Database:
         finally:
             cursor.close()
     
+    def delete_vehicles_for_pickup_date(self, pickup_date: str):
+        """
+        Delete all vehicles for a specific pickup_date (across all cities and return dates).
+        This is faster than deleting per combination - single bulk delete operation.
+        
+        Args:
+            pickup_date: Pickup date (ISO format, e.g., '2025-11-21T10:00:00+10:00' or '2025-11-21')
+            
+        Returns:
+            Number of records deleted
+        """
+        cursor = self.conn.cursor()
+        try:
+            # Parse pickup_date - handle both datetime and date-only formats
+            try:
+                pickup_dt = datetime.fromisoformat(pickup_date.replace('Z', '+00:00'))
+            except:
+                # If parsing fails, try date-only format
+                pickup_dt = datetime.strptime(pickup_date.split('T')[0], '%Y-%m-%d')
+            
+            # Delete all records for this pickup_date (date part only, ignoring time)
+            cursor.execute("""
+                DELETE FROM vehicles 
+                WHERE DATE(pickup_date) = DATE(%s)
+            """, (pickup_dt,))
+            deleted_count = cursor.rowcount
+            self.conn.commit()
+            return deleted_count
+        except Exception as e:
+            self.conn.rollback()
+            raise Exception(f"Failed to delete vehicles for pickup_date: {str(e)}")
+        finally:
+            cursor.close()
+    
     def delete_vehicles_for_combination(self, scrape_datetime: str, city: str, 
                                        pickup_date: str, return_date: str):
         """
         Delete all vehicles for a specific city-date combination.
         This prevents duplicate records when re-scraping.
+        NOTE: This method is kept for backward compatibility but is no longer used
+        since we now use upfront deletion via delete_vehicles_for_pickup_date.
         
         Args:
             scrape_datetime: Scrape datetime (ISO format)
