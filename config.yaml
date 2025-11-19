@@ -20,12 +20,90 @@ cities:
     longitude: 153.02809
     location_string: "Brisbane, Queensland, Australia"
     radius: 3.5
+  - name: "Perth"
+    code: "PER"
+    latitude: -31.952963
+    longitude: 115.857482
+    location_string: "Perth, Western Australia, Australia"
+    radius: 11
   - name: "Adelaide"
     code: "ADL"
     latitude: -34.92908221667643
     longitude: 138.60017495239254
     location_string: "Adelaide, South Australia, Australia"
     radius: 3.5
+  - name: "Gold Coast"
+    code: "OOL"
+    latitude: -28.016667
+    longitude: 153.4
+    location_string: "Gold Coast, Queensland, Australia"
+    radius: 6.5
+  - name: "Canberra"
+    code: "CBR"
+    latitude: -35.2809368
+    longitude: 149.1300092
+    location_string: "Canberra, Australian Capital Territory, Australia"
+    radius: 10
+  - name: "Newcastle"
+    code: "NTL"
+    latitude: -32.9282712
+    longitude: 151.7816802
+    location_string: "Newcastle, New South Wales, Australia"
+    radius: 9
+  - name: "Sunshine Coast"
+    code: "MCY"
+    latitude: -26.642740290203573
+    longitude: 153.06761074072267
+    location_string: "Sunshine Coast, Queensland, Australia"
+    radius: 20
+  - name: "Wollongong"
+    code: "WOL"
+    latitude: -34.424
+    longitude: 150.89345
+    location_string: "Wollongong, New South Wales, Australia"
+    radius: 10
+  - name: "Logan"
+    code: "LOG"
+    latitude: -27.642222
+    longitude: 153.106944
+    location_string: "Logan, Queensland, Australia"
+    radius: 9
+  - name: "Geelong"
+    code: "GEX"
+    latitude: -38.14711
+    longitude: 144.36069
+    location_string: "Geelong, Victoria, Australia"
+    radius: 7
+  - name: "Hobart"
+    code: "HBA"
+    latitude: -42.87936
+    longitude: 147.32941
+    location_string: "Hobart, Tasmania, Australia"
+    radius: 5
+  - name: "Townsville"
+    code: "TSV"
+    latitude: -19.26639
+    longitude: 146.8057
+    location_string: "Townsville, Queensland, Australia"
+    radius: 7
+  - name: "Cairns"
+    code: "CNS"
+    latitude: -16.92304
+    longitude: 145.76625
+    location_string: "Cairns, Queensland, Australia"
+    radius: 7
+  - name: "Darwin"
+    code: "DRW"
+    latitude: -12.46113
+    longitude: 130.84185
+    location_string: "Darwin, Northern Territory, Australia"
+    radius: 5
+  - name: "Toowoomba"
+    code: "TWB"
+    latitude: -27.56056
+    longitude: 151.95386
+    location_string: "Toowoomba, Queensland, Australia"
+    radius: 10
 
 # Date configuration
 date_config:
